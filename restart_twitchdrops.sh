@@ -22,8 +22,8 @@ USER_HOME=$(eval echo "~$USER")
 
 SCRIPT_NAME=$(basename "$0")
 
-GITHUB_REPO_RAW_URL="https://raw.githubusercontent.com/deinuser/twitchdropsminer-update/main/$SCRIPT_NAME"
-GITHUB_API_LATEST_COMMIT="https://api.github.com/repos/deinuser/twitchdropsminer-update/commits/main"
+GITHUB_REPO_RAW_URL="https://raw.githubusercontent.com/gbzret4d/DevilXD-TwitchDropsMiner-restart-skript/refs/heads/main/restart_twitchdrops.sh"
+GITHUB_API_LATEST_COMMIT="https://api.github.com/repos/gbzret4d/DevilXD-TwitchDropsMiner-restart-skript/commits/main"
 
 PROGRAM_PATH="$USER_HOME/Desktop/devilxd/Twitch Drops Miner/Twitch Drops Miner (by DevilXD)"
 DOWNLOAD_DIR="$USER_HOME/Downloads"
