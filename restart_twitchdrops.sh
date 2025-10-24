@@ -13,7 +13,7 @@
 #----------------------------------------------------
 
 set -euo pipefail
-set -x  # Für Debugging, entferne bei produktivem Einsatz
+set -x  # Für Debugging, bei Produktiveinsatz ggf. entfernen
 
 # --- Variablen ---
 
@@ -23,7 +23,7 @@ USER_HOME=$(eval echo "~$USER")
 SCRIPT_NAME=$(basename "$0")
 
 GITHUB_REPO_RAW_URL="https://raw.githubusercontent.com/gbzret4d/DevilXD-TwitchDropsMiner-restart-skript/main/$SCRIPT_NAME"
-GITHUB_API_LATEST_COMMIT="https://api.github.com/repos/gbzret4d/DevilXD-TwitchDropsMiner-restart-skript/commits/main"
+# GITHUB_API_LATEST_COMMIT ist entfallen, da wir Commit-SHA nicht mehr brauchen
 
 PROGRAM_PATH="$USER_HOME/Desktop/devilxd/Twitch Drops Miner/Twitch Drops Miner (by DevilXD)"
 DOWNLOAD_DIR="$USER_HOME/Downloads"
@@ -40,12 +40,6 @@ self_update() {
   log "Überprüfe auf neue Skript-Version..."
 
   local_sha=$(sha1sum "$0" | awk '{print $1}')
-  remote_sha=$(wget -qO- "$GITHUB_API_LATEST_COMMIT" | grep -m1 '"sha"' | cut -d '"' -f4)
-
-  if [ -z "$remote_sha" ]; then
-    log "WARNUNG: Keine Remote-SHA erhalten, Self-Update übersprungen."
-    return
-  fi
 
   remote_tmp="/tmp/${SCRIPT_NAME}.remote"
 
@@ -64,7 +58,6 @@ self_update() {
     rm -f "$remote_tmp"
     log "Skript aktualisiert, starte neu..."
     exec "$0" "$@"
-    # exec ersetzt den aktuellen Prozess, daher kein exit nötig
   else
     log "Skript ist aktuell."
     rm -f "$remote_tmp"
@@ -171,4 +164,4 @@ main() {
   log "Update- und Neustart-Prozess abgeschlossen."
 }
 
-main
+main "$@"
