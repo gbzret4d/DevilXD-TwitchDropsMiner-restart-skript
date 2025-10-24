@@ -27,8 +27,8 @@ Run the script as the user running Twitch Drops Miner:
 
 BASH
 ./restart_twitchdrops.sh
-The script will:
 
+The script will:
 Check for a new version of itself and update if necessary.
 Terminate running Twitch Drops Miner processes gracefully.
 Download and extract the latest Twitch Drops Miner release.
@@ -50,6 +50,6 @@ The script uses the following URLs. Update these if you fork or rename this repo
 BASH
 GITHUB_REPO_RAW_URL="https://raw.githubusercontent.com/gbzret4d/DevilXD-TwitchDropsMiner-restart-skript/main/restart_twitchdrops.sh"
 GITHUB_API_LATEST_COMMIT="https://api.github.com/repos/gbzret4d/DevilXD-TwitchDropsMiner-restart-skript/commits/main"
-Required commands
 
+Required commands
 Ensure wget, unzip, rsync, and sha1sum are installed and available in your PATH.
