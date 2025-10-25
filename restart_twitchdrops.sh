@@ -119,11 +119,7 @@ main() {
   log "Archive entpacken..."
   unzip -q "$ZIP_NAME" -d "$TMP_EXTRACT_DIR" || { log "FEHLER: Entpacken fehlgeschlagen!"; exit 1; }
 
-  # Backup der bestehenden Installation vom Zielverzeichnis
-  BACKUP_DIR="$TARGET_DIR/backup_$(date '+%Y%m%d_%H%M%S')"
-  log "Backup der aktuellen Installation in: $BACKUP_DIR"
-  mkdir -p "$BACKUP_DIR"
-  rsync -a --exclude='cookies.jat' --exclude='settings.json' "$TARGET_DIR/" "$BACKUP_DIR/"
+  # Backup der bestehenden Installation entfernt (keine Backups mehr)
 
   # Neue Dateien kopieren (ohne cookies.jat & settings.json)
   log "Kopiere neue Dateien nach $TARGET_DIR"
