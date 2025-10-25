@@ -3,10 +3,13 @@
 # Script: restart_twitchdrops.sh
 # Purpose: Update and restart Twitch Drops Miner by DevilXD
 # Features:
-#   - Log rotation with deletion (Logs >7 Tage alt werden entfernt)
-#   - SHA256 Checksumme wird dynamisch von GitHub Release bezogen (wenn möglich)
-#   - Systemd-Service + Timer wird automatisch eingerichtet für 4h Intervalle
+#   - Log rotation mit Löschung alter Logs
+#   - Dynamische SHA256-Prüfsumme von GitHub Release (wenn möglich)
+#   - systemd-Service + Timer automatisch erstellen und aktivieren
 #   - Automatischer Neustart via systemd oder manuell
+#   - Prüft und installiert dbus-launch (dbus-x11) automatisch bei Root-Rechten
+#   - Aktiviert enable-linger automatisch bei Root-Rechten
+#
 # Usage:
 #   ./restart_twitchdrops.sh [update|restart|update_restart]
 #----------------------------------------------------
@@ -47,14 +50,13 @@ log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
 }
 
-# systemd user session prüfen
 systemd_user_available() {
   systemctl --user show-environment &>/dev/null
 }
 
 enable_linger_for_user() {
   if [ "$(id -u)" -ne 0 ]; then
-    log "Kein root-Recht zum enable-linger, überspringe."
+    log "Kein Root zum enable-linger, überspringe."
     return 1
   fi
   local user="$1"
@@ -94,14 +96,12 @@ try_start_systemd_user_session() {
 }
 
 rotate_log() {
-  # Log rotation bei Überschreiten der max Größe
   if [ -f "$LOG_FILE" ] && [ "$(stat -c%s "$LOG_FILE")" -gt "$MAX_LOG_SIZE" ]; then
     mv "$LOG_FILE" "$LOG_FILE.$(date '+%Y%m%d_%H%M%S')"
     log "Log-Rotation: Log wurde rotiert."
 
-    # Alte Logs löschen, älter als X Tage
     find "$TARGET_DIR" -maxdepth 1 -name 'twitchdropsminer.log.*' -mtime +"$LOG_DELETE_OLDER_THAN_DAYS" -exec rm -f {} + \
-      && log "Alte Logs (älter als $LOG_DELETE_OLDER_THAN_DAYS Tage) wurden gelöscht."
+      && log "Alte Logs (älter als $LOG_DELETE_OLDER_DAYS Tage) wurden gelöscht."
   fi
 }
 
@@ -363,11 +363,58 @@ self_update() {
   fi
 }
 
+install_dbus_launch() {
+  if command -v dbus-launch &>/dev/null ; then
+    log "dbus-launch ist bereits installiert."
+    return 0
+  fi
+
+  log "dbus-launch nicht gefunden."
+
+  if [ "$(id -u)" -ne 0 ]; then
+    log "FEHLER: dbus-launch fehlt und keine Root-Rechte für Installation."
+    log "Bitte dbus-x11 manuell installieren (z.B. 'sudo apt install dbus-x11')."
+    exit 1
+  fi
+
+  log "Versuche dbus-x11 Paket zu installieren (Debian/Ubuntu)..."
+  if command -v apt-get &>/dev/null; then
+    apt-get update
+    if apt-get install -y dbus-x11; then
+      log "dbus-x11 erfolgreich installiert."
+    else
+      log "FEHLER: dbus-x11 konnte nicht installiert werden."
+      exit 1
+    fi
+  else
+    log "FEHLER: Paketmanager apt-get nicht gefunden. Installation von dbus-x11 nicht möglich."
+    exit 1
+  fi
+}
+
 main() {
   rotate_log
   load_config
 
-  # Systemd user session prüfen und ggf. starten/enable-linger setzen
+  # Prüfe und installiere dbus-launch wenn nötig
+  install_dbus_launch
+
+  # Linger prüfen und ggf. aktivieren wenn root
+  if [ "$(id -u)" = 0 ]; then
+    linger_active=$(loginctl show-user "$USER" | grep -E "^Linger=yes" || true)
+    if [ -z "$linger_active" ]; then
+      log "Linger für Benutzer $USER ist nicht aktiviert. Versuche Aktivierung..."
+      if loginctl enable-linger "$USER"; then
+        log "Linger erfolgreich aktiviert."
+      else
+        log "FEHLER: Konnte Linger nicht aktivieren. Bitte manuell aktivieren."
+      fi
+    else
+      log "Linger ist bereits aktiviert."
+    fi
+  fi
+
+  # Systemd user session prüfen und ggf. starten
   if ! systemd_user_available; then
     log "Systemd User-Bus nicht verfügbar beim Start."
 
@@ -378,7 +425,7 @@ main() {
     try_start_systemd_user_session
 
     if ! systemd_user_available; then
-      log "Systemd User-Bus weiterhin nicht verfügbar, einige Funktionen werden limitiert sein."
+      log "Systemd User-Bus weiterhin nicht verfügbar, einige Funktionen limitiert."
     else
       log "Systemd User-Bus nach Startversuch jetzt verfügbar."
     fi
@@ -388,14 +435,15 @@ main() {
 
   create_systemd_service_and_timer
 
-  local mode="${1:-update_restart}"
-
+  # Vorhandene wichtige Befehle prüfen
   for cmd in wget unzip rsync sha1sum sha256sum systemctl; do
     if ! command -v "$cmd" &>/dev/null; then
       log "FEHLER: Befehl '$cmd' nicht gefunden."
       exit 1
     fi
   done
+
+  local mode="${1:-update_restart}"
 
   if [[ "$mode" == "restart" ]]; then
     log "Nur Neustart wird ausgeführt..."
