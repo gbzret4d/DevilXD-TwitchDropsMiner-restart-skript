@@ -40,10 +40,57 @@ SYSTEMD_TIMER_NAME="twitchdropsminer.timer"
 
 EXPECTED_SHA256=""  # wird dynamisch befüllt
 
+
 # --- Funktionen ---
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
+}
+
+# systemd user session prüfen
+systemd_user_available() {
+  systemctl --user show-environment &>/dev/null
+}
+
+enable_linger_for_user() {
+  if [ "$(id -u)" -ne 0 ]; then
+    log "Kein root-Recht zum enable-linger, überspringe."
+    return 1
+  fi
+  local user="$1"
+  if [ -z "$user" ]; then
+    user="$USER"
+  fi
+  log "Versuche enable-linger für Benutzer $user..."
+  if loginctl enable-linger "$user"; then
+    log "enable-linger erfolgreich."
+    return 0
+  else
+    log "enable-linger fehlgeschlagen."
+    return 1
+  fi
+}
+
+try_start_systemd_user_session() {
+  if systemd_user_available; then
+    log "Systemd User-Bus bereits verfügbar."
+    return 0
+  fi
+  log "Systemd User-Bus nicht vorhanden. Versuche mit dbus-launch Systemd user session zu starten..."
+  if command -v dbus-launch &>/dev/null; then
+    export $(dbus-launch)
+    sleep 1
+  else
+    log "dbus-launch nicht vorhanden. Kann user session nicht starten."
+    return 1
+  fi
+  if systemd_user_available; then
+    log "Nach dbus-launch ist systemd user-bus verfügbar."
+    return 0
+  else
+    log "Konnte keine systemd user-bus Verbindung herstellen."
+    return 1
+  fi
 }
 
 rotate_log() {
@@ -88,7 +135,6 @@ download_with_retry() {
 get_sha256_from_github() {
   log "Versuche SHA256 Prüfsumme von der GitHub-API zu lesen..."
 
-  # Hole latest release Infos mit wget (keine jq vorausgesetzt), extrahiere URL und SHA256 falls verfügbar
   local json
   json=$(wget -qO- "$GITHUB_API_LATEST_RELEASE") || {
     log "Warnung: Konnte GitHub API nicht laden, keine Prüfsumme verfügbar."
@@ -96,10 +142,7 @@ get_sha256_from_github() {
     return
   }
 
-  # Finde Asset die unser ZIP_FILE_NAME entspricht
-  local asset_url asset_sha256
-  # GitHub API liefert assets mit URL und evtl. "label" oder "name" -> leider SHA256 selten vorhanden
-  # Daher nur Bestimmung der neuesten ZIP URL und zur Sicherheit SHA256 leer
+  local asset_url
   asset_url=$(echo "$json" | grep -Eo "\"browser_download_url\": *\"[^\"]+$ZIP_FILE_NAME\"" | head -n1 | cut -d\" -f4 || true)
 
   if [ -z "$asset_url" ]; then
@@ -108,12 +151,8 @@ get_sha256_from_github() {
     return
   fi
 
-  # Für TwitchDropsMiner gibt es scheinbar keine SHA256 Checksums in API-Assets
-  # Du kannst hier Erweiterung einfügen, falls es die mal gibt, z.B. in .sha256 Datei im Release
+  EXPECTED_SHA256=""
 
-  EXPECTED_SHA256=""  # saubere Prüfung fällt weg wenn keine Info vorhanden
-
-  # Setze den Download URL falls im Release abweichend
   if [ "$asset_url" != "$ZIP_URL" ]; then
     log "Neuer Download URL vom Release: $asset_url"
     ZIP_URL="$asset_url"
@@ -121,15 +160,21 @@ get_sha256_from_github() {
   fi
 }
 
-stop_processes() {
-  # Prüfe systemd Service
-  if systemctl --user is-active --quiet "$SYSTEMD_SERVICE_NAME" 2>/dev/null; then
-    log "Systemd User-Service $SYSTEMD_SERVICE_NAME aktiv, restart über systemd..."
-    systemctl --user restart "$SYSTEMD_SERVICE_NAME"
-    return 0
+validate_checksum() {
+  log "Prüfe SHA256-Prüfsumme..."
+  local computed_sha
+  computed_sha=$(sha256sum "$ZIP_NAME" | awk '{print $1}')
+  if [ "$computed_sha" != "$EXPECTED_SHA256" ]; then
+    log "FEHLER: Prüfsumme stimmt nicht. Erwartet: $EXPECTED_SHA256 Berechnet: $computed_sha"
+    return 1
   fi
+  log "Prüfsumme korrekt."
+  return 0
+}
 
-  log "Stoppe Twitch Drops Miner Prozesse manuell..."
+manual_stop_start() {
+  log "Manueller Neustart ohne systemd user..."
+
   local pids
   pids=$(pgrep -f "Twitch Drops Mi" || true)
 
@@ -156,6 +201,23 @@ stop_processes() {
   else
     log "Keine laufenden Prozesse gefunden."
   fi
+
+  start_program
+  log "Manueller Neustart abgeschlossen."
+}
+
+stop_processes() {
+  if systemd_user_available; then
+    if systemctl --user is-active --quiet "$SYSTEMD_SERVICE_NAME" 2>/dev/null; then
+      log "Systemd User-Service $SYSTEMD_SERVICE_NAME aktiv, restart über systemd..."
+      systemctl --user restart "$SYSTEMD_SERVICE_NAME"
+      return 0
+    fi
+    log "Systemd User-Service $SYSTEMD_SERVICE_NAME nicht aktiv, nutze manuellen Prozess-Neustart."
+  else
+    log "Systemd User-Bus nicht verfügbar, nutze manuellen Prozess-Neustart."
+  fi
+  manual_stop_start
 }
 
 cleanup_old_tmp_dirs() {
@@ -189,47 +251,6 @@ start_program() {
   fi
 
   nohup "$PROGRAM_PATH" >>"$LOG_FILE" 2>&1 &
-}
-
-create_systemd_service_and_timer() {
-  log "Prüfe systemd User-Service und -Timer..."
-
-  SYSTEMD_DIR="$USER_HOME/.config/systemd/user"
-  mkdir -p "$SYSTEMD_DIR"
-
-  SERVICE_FILE="$SYSTEMD_DIR/$SYSTEMD_SERVICE_NAME"
-  TIMER_FILE="$SYSTEMD_DIR/$SYSTEMD_TIMER_NAME"
-
-  local service_changed=0
-  local timer_changed=0
-
-  # Schreibe Service-Datei falls nicht vorhanden oder anders
-  if [ ! -f "$SERVICE_FILE" ] || ! cmp -s <(generate_service_content) "$SERVICE_FILE"; then
-    generate_service_content > "$SERVICE_FILE"
-    systemctl --user daemon-reload
-    systemctl --user enable "$SYSTEMD_SERVICE_NAME"
-    service_changed=1
-    log "Systemd Service $SYSTEMD_SERVICE_NAME neu installiert/aktualisiert."
-  fi
-
-  # Schreibe Timer-Datei falls nicht vorhanden oder anders
-  if [ ! -f "$TIMER_FILE" ] || ! cmp -s <(generate_timer_content) "$TIMER_FILE"; then
-    generate_timer_content > "$TIMER_FILE"
-    systemctl --user daemon-reload
-    systemctl --user enable "$SYSTEMD_TIMER_NAME"
-    timer_changed=1
-    log "Systemd Timer $SYSTEMD_TIMER_NAME neu installiert/aktualisiert."
-  fi
-
-  # Timer starten falls nicht bereits aktiv
-  if ! systemctl --user is-active --quiet "$SYSTEMD_TIMER_NAME"; then
-    systemctl --user start "$SYSTEMD_TIMER_NAME"
-    log "Systemd Timer $SYSTEMD_TIMER_NAME gestartet."
-  fi
-
-  if [ $service_changed -eq 0 ] && [ $timer_changed -eq 0 ]; then
-    log "Systemd Service und Timer sind aktuell und aktiv."
-  fi
 }
 
 generate_service_content() {
@@ -266,6 +287,59 @@ WantedBy=timers.target
 EOF
 }
 
+create_systemd_service_and_timer() {
+  log "Prüfe systemd User-Service und -Timer..."
+
+  if ! systemd_user_available; then
+    log "Systemd User-Bus nicht verfügbar. Versuche systemd user session zu starten..."
+
+    if [ "$(id -u)" = "0" ]; then
+      enable_linger_for_user "$USER"
+    fi
+
+    try_start_systemd_user_session
+
+    if ! systemd_user_available; then
+      log "Systemd User-Bus weiterhin nicht verfügbar. Überspringe Erstellen von Service und Timer."
+      return
+    fi
+  fi
+
+  SYSTEMD_DIR="$USER_HOME/.config/systemd/user"
+  mkdir -p "$SYSTEMD_DIR"
+
+  SERVICE_FILE="$SYSTEMD_DIR/$SYSTEMD_SERVICE_NAME"
+  TIMER_FILE="$SYSTEMD_DIR/$SYSTEMD_TIMER_NAME"
+
+  local service_changed=0
+  local timer_changed=0
+
+  if [ ! -f "$SERVICE_FILE" ] || ! cmp -s <(generate_service_content) "$SERVICE_FILE"; then
+    generate_service_content > "$SERVICE_FILE"
+    systemctl --user daemon-reload
+    systemctl --user enable "$SYSTEMD_SERVICE_NAME"
+    service_changed=1
+    log "Systemd Service $SYSTEMD_SERVICE_NAME neu installiert/aktualisiert."
+  fi
+
+  if [ ! -f "$TIMER_FILE" ] || ! cmp -s <(generate_timer_content) "$TIMER_FILE"; then
+    generate_timer_content > "$TIMER_FILE"
+    systemctl --user daemon-reload
+    systemctl --user enable "$SYSTEMD_TIMER_NAME"
+    timer_changed=1
+    log "Systemd Timer $SYSTEMD_TIMER_NAME neu installiert/aktualisiert."
+  fi
+
+  if ! systemctl --user is-active --quiet "$SYSTEMD_TIMER_NAME"; then
+    systemctl --user start "$SYSTEMD_TIMER_NAME"
+    log "Systemd Timer $SYSTEMD_TIMER_NAME gestartet."
+  fi
+
+  if [ $service_changed -eq 0 ] && [ $timer_changed -eq 0 ]; then
+    log "Systemd Service und Timer sind aktuell und aktiv."
+  fi
+}
+
 self_update() {
   log "Prüfe Skript-Update..."
   local_sha=$(sha1sum "$0" | awk '{print $1}')
@@ -292,6 +366,26 @@ self_update() {
 main() {
   rotate_log
   load_config
+
+  # Systemd user session prüfen und ggf. starten/enable-linger setzen
+  if ! systemd_user_available; then
+    log "Systemd User-Bus nicht verfügbar beim Start."
+
+    if [ "$(id -u)" = "0" ]; then
+      enable_linger_for_user "$USER"
+    fi
+
+    try_start_systemd_user_session
+
+    if ! systemd_user_available; then
+      log "Systemd User-Bus weiterhin nicht verfügbar, einige Funktionen werden limitiert sein."
+    else
+      log "Systemd User-Bus nach Startversuch jetzt verfügbar."
+    fi
+  else
+    log "Systemd User-Bus verfügbar beim Start."
+  fi
+
   create_systemd_service_and_timer
 
   local mode="${1:-update_restart}"
@@ -351,19 +445,6 @@ main() {
       log "Update abgeschlossen, Neustart nicht ausgeführt."
     fi
   fi
-}
-
-# Prüfsummenfunktion ausgelagert, da noch in main gebraucht
-validate_checksum() {
-  log "Prüfe SHA256-Prüfsumme..."
-  local computed_sha
-  computed_sha=$(sha256sum "$ZIP_NAME" | awk '{print $1}')
-  if [ "$computed_sha" != "$EXPECTED_SHA256" ]; then
-    log "FEHLER: Prüfsumme stimmt nicht. Erwartet: $EXPECTED_SHA256 Berechnet: $computed_sha"
-    return 1
-  fi
-  log "Prüfsumme korrekt."
-  return 0
 }
 
 self_update "$@"
