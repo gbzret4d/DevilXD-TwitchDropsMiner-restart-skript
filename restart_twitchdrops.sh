@@ -81,8 +81,9 @@ try_start_systemd_user_session() {
     return 0
   fi
 
-  # Hier Ergänzung: Wenn SSH X11 Forwarding erkannt, skip dbus-launch Start, weil oft Fehler:
-  if [[ "$DISPLAY" =~ ^localhost:[0-9]+(\.[0-9]+)?$ ]]; then
+  log "DEBUG: DISPLAY ist '$DISPLAY'"
+
+  if [[ "$DISPLAY" == localhost:* ]]; then
     log "SSH X11 Forwarding erkannt (DISPLAY=$DISPLAY). Systemd User-Bus per dbus-launch nicht gestartet."
     return 1
   fi
