@@ -10,6 +10,8 @@
 #   - Prüft und installiert dbus-launch (dbus-x11) automatisch bei Root-Rechten
 #   - Aktiviert enable-linger automatisch bei Root-Rechten
 #
+#   - NEU: Erkennung SSH X11 Forwarding und Vermeidung von dbus-launch Fehler
+#
 # Usage:
 #   ./restart_twitchdrops.sh [update|restart|update_restart]
 #----------------------------------------------------
@@ -51,7 +53,7 @@ log() {
 }
 
 systemd_user_available() {
-  systemctl --user show-environment &>/dev/null
+  systemctl --user show-environment &>/dev/null || return 1
 }
 
 enable_linger_for_user() {
@@ -78,6 +80,13 @@ try_start_systemd_user_session() {
     log "Systemd User-Bus bereits verfügbar."
     return 0
   fi
+
+  # Hier Ergänzung: Wenn SSH X11 Forwarding erkannt, skip dbus-launch Start, weil oft Fehler:
+  if [[ "$DISPLAY" =~ ^localhost:[0-9]+(\.[0-9]+)?$ ]]; then
+    log "SSH X11 Forwarding erkannt (DISPLAY=$DISPLAY). Systemd User-Bus per dbus-launch nicht gestartet."
+    return 1
+  fi
+
   log "Systemd User-Bus nicht vorhanden. Versuche mit dbus-launch Systemd user session zu starten..."
   if command -v dbus-launch &>/dev/null; then
     export $(dbus-launch)
@@ -101,7 +110,7 @@ rotate_log() {
     log "Log-Rotation: Log wurde rotiert."
 
     find "$TARGET_DIR" -maxdepth 1 -name 'twitchdropsminer.log.*' -mtime +"$LOG_DELETE_OLDER_THAN_DAYS" -exec rm -f {} + \
-      && log "Alte Logs (älter als $LOG_DELETE_OLDER_DAYS Tage) wurden gelöscht."
+      && log "Alte Logs (älter als $LOG_DELETE_OLDER_THAN_DAYS Tage) wurden gelöscht."
   fi
 }
 
