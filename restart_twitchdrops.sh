@@ -81,8 +81,15 @@ try_start_systemd_user_session() {
     return 0
   fi
 
-  log "DEBUG: DISPLAY ist '$DISPLAY'"
+  log "DEBUG: DISPLAY ist '${DISPLAY:-<nicht gesetzt>}'"
 
+  # Prüfe ob DISPLAY leer oder leerer String
+  if [ -z "${DISPLAY:-}" ]; then
+    log "DISPLAY ist nicht gesetzt. dbus-launch wird nicht gestartet."
+    return 1
+  fi
+
+  # Prüfe ob DISPLAY mit localhost: beginnt
   if [[ "$DISPLAY" == localhost:* ]]; then
     log "SSH X11 Forwarding erkannt (DISPLAY=$DISPLAY). Systemd User-Bus per dbus-launch nicht gestartet."
     return 1
@@ -96,6 +103,7 @@ try_start_systemd_user_session() {
     log "dbus-launch nicht vorhanden. Kann user session nicht starten."
     return 1
   fi
+
   if systemd_user_available; then
     log "Nach dbus-launch ist systemd user-bus verfügbar."
     return 0
@@ -104,6 +112,7 @@ try_start_systemd_user_session() {
     return 1
   fi
 }
+
 
 rotate_log() {
   if [ -f "$LOG_FILE" ] && [ "$(stat -c%s "$LOG_FILE")" -gt "$MAX_LOG_SIZE" ]; then
