@@ -10,7 +10,7 @@
 #   - Prüft und installiert dbus-launch (dbus-x11) automatisch bei Root-Rechten
 #   - Aktiviert enable-linger automatisch bei Root-Rechten
 #
-#   - NEU: Erkennung SSH X11 Forwarding und Vermeidung von dbus-launch Fehler
+#   - NEU: Automatischer Headless-Modus bei SSH X11 Forwarding (kein systemd user session)
 #
 # Usage:
 #   ./restart_twitchdrops.sh [update|restart|update_restart]
@@ -24,7 +24,6 @@ SCRIPT_NAME=$(basename "$0")
 
 CONFIG_FILE="$USER_HOME/.twitchdropsminer.conf"
 
-# Standardwerte (überschreibbar via Config-File)
 GITHUB_REPO_RAW_URL="https://raw.githubusercontent.com/gbzret4d/DevilXD-TwitchDropsMiner-restart-skript/main/$SCRIPT_NAME"
 GITHUB_API_LATEST_RELEASE="https://api.github.com/repos/DevilXD/TwitchDropsMiner/releases/latest"
 
@@ -45,7 +44,6 @@ SYSTEMD_TIMER_NAME="twitchdropsminer.timer"
 
 EXPECTED_SHA256=""  # wird dynamisch befüllt
 
-
 # --- Funktionen ---
 
 log() {
@@ -62,15 +60,22 @@ enable_linger_for_user() {
     return 1
   fi
   local user="$1"
-  if [ -z "$user" ]; then
-    user="$USER"
-  fi
+  if [ -z "$user" ]; then user="$USER"; fi
   log "Versuche enable-linger für Benutzer $user..."
   if loginctl enable-linger "$user"; then
     log "enable-linger erfolgreich."
     return 0
   else
     log "enable-linger fehlgeschlagen."
+    return 1
+  fi
+}
+
+is_ssh_x11_forwarding() {
+  # Prüft ob DISPLAY auf eine typische SSH X11 forwarding Variable gesetzt ist, z.B. localhost:10.0
+  if [[ "${DISPLAY:-}" == localhost:* ]]; then
+    return 0
+  else
     return 1
   fi
 }
@@ -83,14 +88,12 @@ try_start_systemd_user_session() {
 
   log "DEBUG: DISPLAY ist '${DISPLAY:-<nicht gesetzt>}'"
 
-  # Prüfe ob DISPLAY leer oder leerer String
   if [ -z "${DISPLAY:-}" ]; then
     log "DISPLAY ist nicht gesetzt. dbus-launch wird nicht gestartet."
     return 1
   fi
 
-  # Prüfe ob DISPLAY mit localhost: beginnt
-  if [[ "$DISPLAY" == localhost:* ]]; then
+  if is_ssh_x11_forwarding; then
     log "SSH X11 Forwarding erkannt (DISPLAY=$DISPLAY). Systemd User-Bus per dbus-launch nicht gestartet."
     return 1
   fi
@@ -103,6 +106,7 @@ try_start_systemd_user_session() {
     log "dbus-launch nicht vorhanden. Kann user session nicht starten."
     return 1
   fi
+
   if systemd_user_available; then
     log "Nach dbus-launch ist systemd user-bus verfügbar."
     return 0
@@ -116,7 +120,6 @@ rotate_log() {
   if [ -f "$LOG_FILE" ] && [ "$(stat -c%s "$LOG_FILE")" -gt "$MAX_LOG_SIZE" ]; then
     mv "$LOG_FILE" "$LOG_FILE.$(date '+%Y%m%d_%H%M%S')"
     log "Log-Rotation: Log wurde rotiert."
-
     find "$TARGET_DIR" -maxdepth 1 -name 'twitchdropsminer.log.*' -mtime +"$LOG_DELETE_OLDER_THAN_DAYS" -exec rm -f {} + \
       && log "Alte Logs (älter als $LOG_DELETE_OLDER_THAN_DAYS Tage) wurden gelöscht."
   fi
@@ -133,7 +136,7 @@ load_config() {
 }
 
 download_with_retry() {
-  local url="$1"; local output="$2"
+  local url="$1" output="$2"
   local tries=3 count=0
   while [ $count -lt $tries ]; do
     log "Download: Versuch $((count+1))/$tries - $url"
@@ -224,7 +227,7 @@ manual_stop_start() {
 }
 
 stop_processes() {
-  if systemd_user_available; then
+  if systemd_user_available && ! is_ssh_x11_forwarding; then
     if systemctl --user is-active --quiet "$SYSTEMD_SERVICE_NAME" 2>/dev/null; then
       log "Systemd User-Service $SYSTEMD_SERVICE_NAME aktiv, restart über systemd..."
       systemctl --user restart "$SYSTEMD_SERVICE_NAME"
@@ -232,7 +235,7 @@ stop_processes() {
     fi
     log "Systemd User-Service $SYSTEMD_SERVICE_NAME nicht aktiv, nutze manuellen Prozess-Neustart."
   else
-    log "Systemd User-Bus nicht verfügbar, nutze manuellen Prozess-Neustart."
+    log "Systemd User-Bus nicht verfügbar oder SSH X11 Forwarding erkannt, nutze manuellen Prozess-Neustart."
   fi
   manual_stop_start
 }
@@ -244,24 +247,32 @@ cleanup_old_tmp_dirs() {
 
 start_program() {
   local display user_xauthority
-  display=$(pgrep -u "$USER" -a | grep -o 'DISPLAY=:[0-9]\+' | head -n1 | cut -d= -f2 || true)
-  if [ -z "$display" ]; then
-    local pid_xorg
-    pid_xorg=$(pgrep -u "$USER" Xorg | head -n1 || true)
-    if [ -n "$pid_xorg" ]; then
-      display=$(tr '\0' '\n' < /proc/"$pid_xorg"/environ | grep "^DISPLAY=" | cut -d= -f2 || true)
+  if is_ssh_x11_forwarding; then
+    # SSH X11 Forwarding detected -> Start headless ohne DISPLAY setzen
+    log "SSH X11 Forwarding erkannt, starte Programm OHNE DISPLAY-Variable."
+    unset DISPLAY
+    unset XAUTHORITY
+  else
+    display=$(pgrep -u "$USER" -a | grep -o 'DISPLAY=:[0-9]\+' | head -n1 | cut -d= -f2 || true)
+    if [ -z "$display" ]; then
+      local pid_xorg
+      pid_xorg=$(pgrep -u "$USER" Xorg | head -n1 || true)
+      if [ -n "$pid_xorg" ]; then
+        display=$(tr '\0' '\n' < /proc/"$pid_xorg"/environ | grep "^DISPLAY=" | cut -d= -f2 || true)
+      fi
     fi
-  fi
-  display=${display:-:12}
-  user_xauthority="$USER_HOME/.Xauthority"
-  if [ ! -f "$user_xauthority" ]; then
-    log "Warnung: XAUTHORITY-Datei nicht gefunden ($user_xauthority)"
+    display=${display:-:12}
+    user_xauthority="$USER_HOME/.Xauthority"
+    if [ ! -f "$user_xauthority" ]; then
+      log "Warnung: XAUTHORITY-Datei nicht gefunden ($user_xauthority)"
+    fi
+
+    export DISPLAY="$display"
+    export XAUTHORITY="$user_xauthority"
+    log "Starte Programm mit DISPLAY=$display"
   fi
 
-  export DISPLAY="$display"
-  export XAUTHORITY="$user_xauthority"
-
-  log "Starte Twitch Drops Miner (DISPLAY=$display)"
+  log "Starte Twitch Drops Miner"
   if [ ! -x "$PROGRAM_PATH" ]; then
     log "FEHLER: Programm nicht gefunden oder nicht ausführbar: $PROGRAM_PATH"
     exit 1
@@ -413,7 +424,16 @@ main() {
   rotate_log
   load_config
 
-  # Prüfe und installiere dbus-launch wenn nötig
+  local mode="${1:-update_restart}"
+
+  log "START main Funktion, mode=$mode"
+  log "DEBUG: DISPLAY ist '${DISPLAY:-<nicht gesetzt>}'"
+  if is_ssh_x11_forwarding; then
+    log "SSH X11 Forwarding erkannt: aktiviere HEADLESS Modus."
+  else
+    log "Keine SSH X11 Forwarding erkannt: normaler Modus."
+  fi
+
   install_dbus_launch
 
   # Linger prüfen und ggf. aktivieren wenn root
@@ -431,26 +451,35 @@ main() {
     fi
   fi
 
-  # Systemd user session prüfen und ggf. starten
-  if ! systemd_user_available; then
-    log "Systemd User-Bus nicht verfügbar beim Start."
-
-    if [ "$(id -u)" = "0" ]; then
-      enable_linger_for_user "$USER"
-    fi
-
-    try_start_systemd_user_session
-
+  # Systemd user session prüfen und ggf. starten (nur wenn nicht SSH X11 Forwarding)
+  if ! is_ssh_x11_forwarding; then
     if ! systemd_user_available; then
-      log "Systemd User-Bus weiterhin nicht verfügbar, einige Funktionen limitiert."
+      log "Systemd User-Bus nicht verfügbar beim Start."
+
+      if [ "$(id -u)" = "0" ]; then
+        enable_linger_for_user "$USER"
+      fi
+
+      try_start_systemd_user_session
+
+      if ! systemd_user_available; then
+        log "Systemd User-Bus weiterhin nicht verfügbar, einige Funktionen limitiert."
+      else
+        log "Systemd User-Bus nach Startversuch jetzt verfügbar."
+      fi
     else
-      log "Systemd User-Bus nach Startversuch jetzt verfügbar."
+      log "Systemd User-Bus verfügbar beim Start."
     fi
   else
-    log "Systemd User-Bus verfügbar beim Start."
+    log "SSH X11 Forwarding erkannt, überspringe systemd user session start."
   fi
 
-  create_systemd_service_and_timer
+  # Service & Timer nur bei normalem Modus anlegen (kein ssh-x11 forwarding)
+  if ! is_ssh_x11_forwarding; then
+    create_systemd_service_and_timer
+  else
+    log "SSH X11 Forwarding, Systemd Service und Timer werden nicht erstellt."
+  fi
 
   # Vorhandene wichtige Befehle prüfen
   for cmd in wget unzip rsync sha1sum sha256sum systemctl; do
@@ -460,12 +489,11 @@ main() {
     fi
   done
 
-  local mode="${1:-update_restart}"
-
   if [[ "$mode" == "restart" ]]; then
     log "Nur Neustart wird ausgeführt..."
     stop_processes
     start_program
+    log "Restart Modus abgeschlossen."
     return 0
   fi
 
@@ -473,9 +501,13 @@ main() {
     log "Starte Update..."
 
     stop_processes
+    log "Prozesse gestoppt."
+
     cleanup_old_tmp_dirs
+    log "Temp-Verzeichnisse bereinigt."
 
     get_sha256_from_github
+    log "Hash von Github geprüft."
 
     mkdir -p "$TMP_EXTRACT_DIR"
     rm -rf "$TMP_EXTRACT_DIR"/* || true
@@ -484,6 +516,7 @@ main() {
       log "FEHLER: Download fehlgeschlagen, Abbruch."
       exit 1
     fi
+    log "Download erfolgreich."
 
     if [ -n "$EXPECTED_SHA256" ]; then
       if ! validate_checksum; then
@@ -496,12 +529,15 @@ main() {
 
     log "Entpacke Download..."
     unzip -q "$ZIP_NAME" -d "$TMP_EXTRACT_DIR"
+    log "Entpackt."
 
-    log "Kopiere Dateien zum Ziel (ausgenommen cookies.jat & settings.json)..."
+    log "Kopiere Dateien zum Ziel..."
     rsync -a --exclude='cookies.jat' --exclude='settings.json' "$TMP_EXTRACT_DIR/Twitch Drops Miner/" "$TARGET_DIR/"
+    log "Kopiert."
 
     rm -rf "$TMP_EXTRACT_DIR"
     rm -f "$ZIP_NAME"
+    log "Bereinigt."
 
     if [[ "$mode" == "update_restart" ]]; then
       start_program
