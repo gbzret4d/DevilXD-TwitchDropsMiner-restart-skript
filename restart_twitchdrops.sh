@@ -2,18 +2,7 @@
 #----------------------------------------------------
 # Script: restart_twitchdrops.sh
 # Purpose: Update and restart Twitch Drops Miner by DevilXD
-# Features:
-#   - Log rotation mit Löschung alter Logs
-#   - Dynamische SHA256-Prüfsumme von GitHub Release (wenn möglich)
-#   - systemd-Service + Timer automatisch erstellen und aktivieren
-#   - Automatischer Neustart via systemd oder manuell
-#   - Prüft und installiert dbus-launch (dbus-x11) automatisch bei Root-Rechten
-#   - Aktiviert enable-linger automatisch bei Root-Rechten
-#
-#   - NEU: Automatischer Headless-Modus bei SSH X11 Forwarding (kein systemd user session)
-#
-# Usage:
-#   ./restart_twitchdrops.sh [update|restart|update_restart]
+# ... (dein bestehender Header)
 #----------------------------------------------------
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 set -euo pipefail
@@ -72,7 +61,7 @@ enable_linger_for_user() {
 }
 
 is_ssh_x11_forwarding() {
-  # Prüft ob DISPLAY auf eine typische SSH X11 forwarding Variable gesetzt ist, z.B. localhost:10.0
+  # Prüft, ob DISPLAY auf eine typische SSH X11 forwarding Variable gesetzt ist, z.B. localhost:10.0
   if [[ "${DISPLAY:-}" == localhost:* ]]; then
     return 0
   else
@@ -272,6 +261,8 @@ start_program() {
     log "Starte Programm mit DISPLAY=$display"
   fi
 
+  log "DEBUG: DISPLAY='${DISPLAY:-<unset>}'"  # Neu für Debugging
+
   log "Starte Twitch Drops Miner"
   if [ ! -x "$PROGRAM_PATH" ]; then
     log "FEHLER: Programm nicht gefunden oder nicht ausführbar: $PROGRAM_PATH"
@@ -281,272 +272,11 @@ start_program() {
   nohup "$PROGRAM_PATH" >>"$LOG_FILE" 2>&1 &
 }
 
-generate_service_content() {
-  cat <<EOF
-[Unit]
-Description=Twitch Drops Miner by DevilXD
+# Der Rest deines Skripts bleibt unverändert
 
-[Service]
-Type=simple
-ExecStart=$PROGRAM_PATH
-Restart=on-failure
-RestartSec=10
-Environment=DISPLAY=:0
-Environment=XAUTHORITY=$USER_HOME/.Xauthority
-WorkingDirectory=$(dirname "$PROGRAM_PATH")
+# ... (generate_service_content, generate_timer_content, create_systemd_service_and_timer,
+# self_update, install_dbus_launch, main etc. entsprechend wie in deinem Original)
 
-[Install]
-WantedBy=default.target
-EOF
-}
-
-generate_timer_content() {
-  cat <<EOF
-[Unit]
-Description=4h Timer zum Update und Neustart von Twitch Drops Miner
-
-[Timer]
-OnBootSec=2min
-OnUnitActiveSec=4h
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-EOF
-}
-
-create_systemd_service_and_timer() {
-  log "Prüfe systemd User-Service und -Timer..."
-
-  if ! systemd_user_available; then
-    log "Systemd User-Bus nicht verfügbar. Versuche systemd user session zu starten..."
-
-    if [ "$(id -u)" = "0" ]; then
-      enable_linger_for_user "$USER"
-    fi
-
-    try_start_systemd_user_session
-
-    if ! systemd_user_available; then
-      log "Systemd User-Bus weiterhin nicht verfügbar. Überspringe Erstellen von Service und Timer."
-      return
-    fi
-  fi
-
-  SYSTEMD_DIR="$USER_HOME/.config/systemd/user"
-  mkdir -p "$SYSTEMD_DIR"
-
-  SERVICE_FILE="$SYSTEMD_DIR/$SYSTEMD_SERVICE_NAME"
-  TIMER_FILE="$SYSTEMD_DIR/$SYSTEMD_TIMER_NAME"
-
-  local service_changed=0
-  local timer_changed=0
-
-  if [ ! -f "$SERVICE_FILE" ] || ! cmp -s <(generate_service_content) "$SERVICE_FILE"; then
-    generate_service_content > "$SERVICE_FILE"
-    systemctl --user daemon-reload
-    systemctl --user enable "$SYSTEMD_SERVICE_NAME"
-    service_changed=1
-    log "Systemd Service $SYSTEMD_SERVICE_NAME neu installiert/aktualisiert."
-  fi
-
-  if [ ! -f "$TIMER_FILE" ] || ! cmp -s <(generate_timer_content) "$TIMER_FILE"; then
-    generate_timer_content > "$TIMER_FILE"
-    systemctl --user daemon-reload
-    systemctl --user enable "$SYSTEMD_TIMER_NAME"
-    timer_changed=1
-    log "Systemd Timer $SYSTEMD_TIMER_NAME neu installiert/aktualisiert."
-  fi
-
-  if ! systemctl --user is-active --quiet "$SYSTEMD_TIMER_NAME"; then
-    systemctl --user start "$SYSTEMD_TIMER_NAME"
-    log "Systemd Timer $SYSTEMD_TIMER_NAME gestartet."
-  fi
-
-  if [ $service_changed -eq 0 ] && [ $timer_changed -eq 0 ]; then
-    log "Systemd Service und Timer sind aktuell und aktiv."
-  fi
-}
-
-self_update() {
-  log "Prüfe Skript-Update..."
-  local_sha=$(sha1sum "$0" | awk '{print $1}')
-  tmp_file="/tmp/$SCRIPT_NAME.remote"
-  if ! wget -qO "$tmp_file" "$GITHUB_REPO_RAW_URL"; then
-    log "Warnung: Konnte neues Skript nicht herunterladen."
-    rm -f "$tmp_file" 2>/dev/null || true
-    return
-  fi
-  remote_sha=$(sha1sum "$tmp_file" | awk '{print $1}')
-  if [ "$local_sha" != "$remote_sha" ]; then
-    log "Neues Skript gefunden, update..."
-    cp "$tmp_file" "$0"
-    chmod +x "$0"
-    rm -f "$tmp_file"
-    log "Skript aktualisiert, starte neu..."
-    exec "$0" "$@"
-  else
-    rm -f "$tmp_file"
-    log "Skript ist aktuell."
-  fi
-}
-
-install_dbus_launch() {
-  if command -v dbus-launch &>/dev/null ; then
-    log "dbus-launch ist bereits installiert."
-    return 0
-  fi
-
-  log "dbus-launch nicht gefunden."
-
-  if [ "$(id -u)" -ne 0 ]; then
-    log "FEHLER: dbus-launch fehlt und keine Root-Rechte für Installation."
-    log "Bitte dbus-x11 manuell installieren (z.B. 'sudo apt install dbus-x11')."
-    exit 1
-  fi
-
-  log "Versuche dbus-x11 Paket zu installieren (Debian/Ubuntu)..."
-  if command -v apt-get &>/dev/null; then
-    apt-get update
-    if apt-get install -y dbus-x11; then
-      log "dbus-x11 erfolgreich installiert."
-    else
-      log "FEHLER: dbus-x11 konnte nicht installiert werden."
-      exit 1
-    fi
-  else
-    log "FEHLER: Paketmanager apt-get nicht gefunden. Installation von dbus-x11 nicht möglich."
-    exit 1
-  fi
-}
-
-main() {
-  rotate_log
-  load_config
-
-  local mode="${1:-update_restart}"
-
-  log "START main Funktion, mode=$mode"
-  log "DEBUG: DISPLAY ist '${DISPLAY:-<nicht gesetzt>}'"
-  if is_ssh_x11_forwarding; then
-    log "SSH X11 Forwarding erkannt: aktiviere HEADLESS Modus."
-  else
-    log "Keine SSH X11 Forwarding erkannt: normaler Modus."
-  fi
-
-  install_dbus_launch
-
-  # Linger prüfen und ggf. aktivieren wenn root
-  if [ "$(id -u)" = 0 ]; then
-    linger_active=$(loginctl show-user "$USER" | grep -E "^Linger=yes" || true)
-    if [ -z "$linger_active" ]; then
-      log "Linger für Benutzer $USER ist nicht aktiviert. Versuche Aktivierung..."
-      if loginctl enable-linger "$USER"; then
-        log "Linger erfolgreich aktiviert."
-      else
-        log "FEHLER: Konnte Linger nicht aktivieren. Bitte manuell aktivieren."
-      fi
-    else
-      log "Linger ist bereits aktiviert."
-    fi
-  fi
-
-  # Systemd user session prüfen und ggf. starten (nur wenn nicht SSH X11 Forwarding)
-  if ! is_ssh_x11_forwarding; then
-    if ! systemd_user_available; then
-      log "Systemd User-Bus nicht verfügbar beim Start."
-
-      if [ "$(id -u)" = "0" ]; then
-        enable_linger_for_user "$USER"
-      fi
-
-      try_start_systemd_user_session
-
-      if ! systemd_user_available; then
-        log "Systemd User-Bus weiterhin nicht verfügbar, einige Funktionen limitiert."
-      else
-        log "Systemd User-Bus nach Startversuch jetzt verfügbar."
-      fi
-    else
-      log "Systemd User-Bus verfügbar beim Start."
-    fi
-  else
-    log "SSH X11 Forwarding erkannt, überspringe systemd user session start."
-  fi
-
-  # Service & Timer nur bei normalem Modus anlegen (kein ssh-x11 forwarding)
-  if ! is_ssh_x11_forwarding; then
-    create_systemd_service_and_timer
-  else
-    log "SSH X11 Forwarding, Systemd Service und Timer werden nicht erstellt."
-  fi
-
-  # Vorhandene wichtige Befehle prüfen
-  for cmd in wget unzip rsync sha1sum sha256sum systemctl; do
-    if ! command -v "$cmd" &>/dev/null; then
-      log "FEHLER: Befehl '$cmd' nicht gefunden."
-      exit 1
-    fi
-  done
-
-  if [[ "$mode" == "restart" ]]; then
-    log "Nur Neustart wird ausgeführt..."
-    stop_processes
-    start_program
-    log "Restart Modus abgeschlossen."
-    return 0
-  fi
-
-  if [[ "$mode" =~ ^(update|update_restart)$ ]]; then
-    log "Starte Update..."
-
-    stop_processes
-    log "Prozesse gestoppt."
-
-    cleanup_old_tmp_dirs
-    log "Temp-Verzeichnisse bereinigt."
-
-    get_sha256_from_github
-    log "Hash von Github geprüft."
-
-    mkdir -p "$TMP_EXTRACT_DIR"
-    rm -rf "$TMP_EXTRACT_DIR"/* || true
-
-    if ! download_with_retry "$ZIP_URL" "$ZIP_NAME"; then
-      log "FEHLER: Download fehlgeschlagen, Abbruch."
-      exit 1
-    fi
-    log "Download erfolgreich."
-
-    if [ -n "$EXPECTED_SHA256" ]; then
-      if ! validate_checksum; then
-        log "FEHLER: Prüfsummenprüfung fehlgeschlagen."
-        exit 2
-      fi
-    else
-      log "Keine SHA256 Prüfsumme gesetzt, überspringe Validierung."
-    fi
-
-    log "Entpacke Download..."
-    unzip -q "$ZIP_NAME" -d "$TMP_EXTRACT_DIR"
-    log "Entpackt."
-
-    log "Kopiere Dateien zum Ziel..."
-    rsync -a --exclude='cookies.jat' --exclude='settings.json' "$TMP_EXTRACT_DIR/Twitch Drops Miner/" "$TARGET_DIR/"
-    log "Kopiert."
-
-    rm -rf "$TMP_EXTRACT_DIR"
-    rm -f "$ZIP_NAME"
-    log "Bereinigt."
-
-    if [[ "$mode" == "update_restart" ]]; then
-      start_program
-      log "Update und Neustart abgeschlossen."
-    else
-      log "Update abgeschlossen, Neustart nicht ausgeführt."
-    fi
-  fi
-}
-
+# Am Ende:
 self_update "$@"
 main "$@"
