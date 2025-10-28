@@ -36,10 +36,11 @@ rotate_log() {
 }
 
 get_rdp_display() {
+  # Suche nach Xorg-Prozessen, die mit xrdp laufen, und filtere Display :10 bis :20
   local disp
-  disp=$(ps aux | grep '[X]org' | grep 'xrdp' | grep -o ':[0-9]\+' | head -n1)
+  disp=$(ps aux | grep '[X]org' | grep 'xrdp' | grep -o ':[0-9]\+' | grep -E ':1[0-9]' | head -n1)
   if [ -z "$disp" ]; then
-    disp=":12"
+    disp=":12"  # Fallback
   fi
   echo "$disp"
 }
