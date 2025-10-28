@@ -2,7 +2,7 @@
 #----------------------------------------------------
 # restart_twitchdrops.sh
 # Zweck: Update, Neustart und Betrieb des Twitch Drops Miner
-# Für dauerhafte xrdp-Sitzung (DISPLAY=:12)
+# Für dauerhafte xrdp-Sitzung mit dynamischer Display-Erkennung
 # Kein systemd, Cron-fähig
 #----------------------------------------------------
 
@@ -35,6 +35,15 @@ rotate_log() {
   fi
 }
 
+get_rdp_display() {
+  local disp
+  disp=$(ps aux | grep '[X]org' | grep 'xrdp' | grep -o ':[0-9]\+' | head -n1)
+  if [ -z "$disp" ]; then
+    disp=":12"
+  fi
+  echo "$disp"
+}
+
 stop_program() {
   local pids
   pids=$(pgrep -f "Twitch Drops Miner" || true)
@@ -52,7 +61,7 @@ stop_program() {
 }
 
 start_program() {
-  export DISPLAY=:12
+  export DISPLAY=$(get_rdp_display)
   xhost +local: || true
 
   log "Starte Twitch Drops Miner mit DISPLAY=$DISPLAY"
