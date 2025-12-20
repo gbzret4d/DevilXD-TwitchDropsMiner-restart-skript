@@ -1,11 +1,30 @@
 #!/bin/bash
 #----------------------------------------------------
 # restart_twitchdrops.sh
-# Purpose: Starts Twitch Miner and Firefox Nightly on Display :1
-# Browser: Firefox Nightly (Trunk) - Allows unsigned extensions
+# Purpose: Updates/Starts Twitch Miner and Firefox Nightly on Display :1
+# Context: Handles both MANUAL start and SYSTEMD service start automatically.
 #----------------------------------------------------
 
 set -u
+
+# --- MANUAL START DETECTION ---
+# If the variable IS_SYSTEMD_SERVICE is NOT set, the user started this manually.
+# We need to cleanup the background service and setup VNC ourself.
+if [ -z "${IS_SYSTEMD_SERVICE:-}" ]; then
+    echo ">> MANUAL START DETECTED <<"
+    echo "Stopping background service (requires sudo)..."
+    sudo systemctl stop twitchminer.service
+    
+    echo "Resetting VNC Session :1..."
+    vncserver -kill :1 > /dev/null 2>&1
+    rm -f /tmp/.X1-lock /tmp/.X11-unix/X1
+    
+    echo "Starting VNC Server..."
+    vncserver :1 -geometry 1600x900 -depth 24
+    
+    echo ">> Manual environment ready. Starting logic... <<"
+    echo "------------------------------------------------"
+fi
 
 # --- CONFIGURATION ---
 USER_HOME="/home/testuser"
@@ -65,7 +84,6 @@ start_firefox() {
         log "Firefox Nightly is already running."
     else
         log "Starting Firefox Nightly..."
-        # Start Nightly in background
         nohup firefox-trunk >> /dev/null 2>&1 &
     fi
 }
@@ -78,7 +96,9 @@ setup_clipboard
 start_firefox
 
 log "Starting Twitch Drops Miner on Display $DISPLAY..."
+
 if [ -x "$PROGRAM_PATH" ]; then
+    # exec replaces the shell with the miner
     exec "$PROGRAM_PATH"
 else
     log "CRITICAL ERROR: Program not found: $PROGRAM_PATH"
