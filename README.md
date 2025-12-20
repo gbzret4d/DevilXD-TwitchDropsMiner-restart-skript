@@ -1,55 +1,157 @@
-# DevilXD Twitch Drops Miner Restart Script
+Twitch Drops Miner - Linux Server Automation
 
-This repository contains a Bash script to update and restart the Twitch Drops Miner application by DevilXD. The script safely terminates any running Twitch Drops Miner processes, downloads the latest release, backs up existing files, updates the application, and restarts it. Additionally, the script can self-update automatically by fetching its latest version from this GitHub repository.
+This repository contains scripts and configuration to run the Twitch Drops Miner (by DevilXD) on a headless Linux server (Ubuntu/Debian) 24/7.
 
----
+It creates a persistent graphical session (Display :1) that automatically starts the Miner and a Browser. You can disconnect and reconnect via RDP/VNC at any time without closing the applications.
+🚀 Features
 
-## Features
+    24/7 Uptime: Runs as a Systemd service. Automatically restarts on crashes or server reboots.
 
-- Graceful process termination with escalation to force kill if needed
-- Automatic download and unpacking of the latest Twitch Drops Miner Linux release
-- Backup of existing files before overwriting
-- Self-updating script based on the latest commit in this repo
-- Runs for the user who executes the script; no hardcoded usernames
-- Requires `wget`, `unzip`, `rsync`, and `sha1sum` commands installed
+    Persistent Session: Uses tightvncserver to keep the GUI running in the background.
 
----
+    Auto-Update: Checks for the latest Dev-Build of the miner on every start.
 
-## Usage
+    Firefox Nightly: Uses the Nightly build to allow unsigned extensions (e.g., auto-join scripts) via xpinstall.signatures.required = false.
 
-1. Clone or download this repository.
+    Clipboard Sync: Includes autocutsel to fix copy/paste between Windows/RDP and the Linux VNC session.
 
-2. Make sure the script is executable:
+    Snap-Free: Avoids Ubuntu Snap issues by using the PPA version of Firefox.
 
-   ```bash
-   chmod +x restart_twitchdrops.sh
-Run the script as the user running Twitch Drops Miner:
+📋 Prerequisites
 
-BASH
-./restart_twitchdrops.sh
+    A Linux VPS/Server (Ubuntu 20.04/22.04/24.04 recommended).
 
-The script will:
-Check for a new version of itself and update if necessary.
-Terminate running Twitch Drops Miner processes gracefully.
-Download and extract the latest Twitch Drops Miner release.
-Backup existing application files.
-Copy updated files.
-Restart the Twitch Drops Miner application.
-Setup
-The script expects the Twitch Drops Miner installation folder to be under:
+    Root/Sudo access.
 
-TEXT
-~/Desktop/devilxd/Twitch Drops Miner
-The downloaded archive will be stored temporarily in the user's Downloads folder before extraction.
+    xrdp (if you want to connect via Remote Desktop).
 
-Configuration
-GitHub URLs
+🛠️ Installation
+1. Install Dependencies
 
-The script uses the following URLs. Update these if you fork or rename this repository:
+Update your system and install necessary tools (VNC, git, unzip, clipboard tools).
+Bash
 
-BASH
-GITHUB_REPO_RAW_URL="https://raw.githubusercontent.com/gbzret4d/DevilXD-TwitchDropsMiner-restart-skript/main/restart_twitchdrops.sh"
-GITHUB_API_LATEST_COMMIT="https://api.github.com/repos/gbzret4d/DevilXD-TwitchDropsMiner-restart-skript/commits/main"
+sudo apt update && sudo apt upgrade -y
+sudo apt install tightvncserver xrdp unzip rsync autocutsel -y
 
-Required commands
-Ensure wget, unzip, rsync, and sha1sum are installed and available in your PATH.
+2. Install Firefox Nightly
+
+We use the Nightly version to support specific extensions and bypass Snap limitations.
+Bash
+
+sudo add-apt-repository ppa:ubuntu-mozilla-daily/ppa -y
+sudo apt update
+sudo apt install firefox-trunk -y
+
+3. Setup VNC
+
+Start the VNC server once to set up your password.
+Bash
+
+vncserver :1
+# Enter a secure password. Choose 'n' for view-only.
+vncserver -kill :1
+
+4. Deploy the Script
+
+Download or create the restart_twitchdrops.sh script in your home directory (e.g., /home/youruser/).
+
+Configuration in the script:
+
+    Adjust USER_HOME to your home directory.
+
+    Ensure PROGRAM_PATH points to the correct Miner executable location.
+
+Make it executable:
+Bash
+
+chmod +x /home/youruser/restart_twitchdrops.sh
+
+5. Setup Systemd Service
+
+Create a service file to keep everything running.
+
+sudo nano /etc/systemd/system/twitchminer.service
+Ini, TOML
+
+[Unit]
+Description=Twitch Drops Miner Persistent Service
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USERNAME
+Group=YOUR_USERNAME
+WorkingDirectory=/home/YOUR_USERNAME
+
+# Environment
+Environment=DISPLAY=:1
+Environment=HOME=/home/YOUR_USERNAME
+
+# Cleanup before start
+ExecStartPre=-/usr/bin/vncserver -kill :1
+ExecStartPre=/bin/rm -f /tmp/.X1-lock /tmp/.X11-unix/X1
+
+# Start VNC server, wait, then run the script
+ExecStart=/bin/bash -c "/usr/bin/vncserver :1 -geometry 1600x900 -depth 24 && sleep 5 && /home/YOUR_USERNAME/restart_twitchdrops.sh"
+
+# Cleanup on stop
+ExecStop=/usr/bin/vncserver -kill :1
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+
+Replace YOUR_USERNAME with your actual Linux username!
+
+Enable and start the service:
+Bash
+
+sudo systemctl daemon-reload
+sudo systemctl enable twitchminer.service
+sudo systemctl start twitchminer.service
+
+🖥️ How to Connect (RDP)
+
+To view the miner and change settings, connect via RDP (Remote Desktop Connection) using a specific configuration to attach to the existing session.
+
+    Open Remote Desktop Connection on Windows.
+
+    Connect to your Server IP.
+
+    In the xrdp login screen, choose Session: vnc-any.
+
+    IP: 127.0.0.1
+
+    Port: 5901
+
+    Password: Your VNC password (from Step 3).
+
+⚙️ Firefox Configuration
+
+To allow unsigned extensions (like "Autojoin for SteamGifts") in Firefox Nightly:
+
+    Connect via RDP.
+
+    Firefox should be open. Type about:config in the address bar.
+
+    Search for xpinstall.signatures.required.
+
+    Set it to false.
+
+🐛 Troubleshooting
+
+Copy & Paste not working? The script includes autocutsel to fix this. If it stops working, restart the service:
+Bash
+
+sudo systemctl restart twitchminer.service
+
+Browser crashing / "Not a snap cgroup"? Ensure you are using firefox-trunk (Nightly) or the PPA version, not the default Ubuntu Snap Firefox.
+
+Black screen on connection? Make sure you are connecting to Port 5901 and using vnc-any in the RDP menu.
+📜 Credits
+
+    Twitch Drops Miner: DevilXD
