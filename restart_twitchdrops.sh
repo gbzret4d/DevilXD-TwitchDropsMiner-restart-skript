@@ -1,12 +1,13 @@
 #!/bin/bash
 #----------------------------------------------------
-# run_twitch_miner.sh
-# Läuft stabil als Systemd Service auf Display :1
+# restart_twitchdrops.sh
+# Purpose: Updates/Starts Twitch Miner and Firefox on Display :1
+# Context: Runs via Systemd Service (Persistent Session)
 #----------------------------------------------------
 
 set -u
 
-# --- KONFIGURATION ---
+# --- CONFIGURATION ---
 USER_HOME="/home/testuser"
 PROGRAM_PATH="$USER_HOME/Desktop/devilxd/Twitch Drops Miner/Twitch Drops Miner (by DevilXD)"
 DOWNLOAD_DIR="$USER_HOME/Downloads"
@@ -14,57 +15,87 @@ ZIP_URL="https://github.com/DevilXD/TwitchDropsMiner/releases/download/dev-build
 ZIP_NAME="$DOWNLOAD_DIR/update.zip"
 TMP_DIR="/tmp/twitch_update"
 TARGET_DIR="$USER_HOME/Desktop/devilxd/Twitch Drops Miner"
+LOG_FILE="$TARGET_DIR/twitchdropsminer.log"
 
-# WICHTIG: Wir zwingen das Display auf :1
+# IMPORTANT: Force Display :1 (Persistent VNC Session)
 export DISPLAY=:1
 export PATH="/usr/local/bin:/usr/bin:/bin"
 
-# Logging Funktion
+# --- FUNCTIONS ---
+
 log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
 }
 
-# Update Logik
 do_update() {
-    log "Prüfe auf Updates / Starte Update Prozess..."
-    rm -rf "$TMP_DIR"
+    log "Checking for updates..."
+    
+    # Clean up previous temp files
+    rm -rf "$TMP_DIR" "$ZIP_NAME"
     mkdir -p "$TMP_DIR"
     
+    # Download with retry (handling redirects)
+    log "Downloading update from GitHub..."
     if wget -q -L -O "$ZIP_NAME" "$ZIP_URL"; then
-        log "Download erfolgreich. Entpacke..."
-        unzip -q -o "$ZIP_NAME" -d "$TMP_DIR"
+        log "Download successful. Extracting..."
         
-        # Dateien rüberkopieren (Einstellungen behalten)
-        if [ -d "$TMP_DIR/Twitch Drops Miner" ]; then
-            rsync -a --exclude='cookies.jar' --exclude='settings.json' "$TMP_DIR/Twitch Drops Miner/" "$TARGET_DIR/"
+        if unzip -q -o "$ZIP_NAME" -d "$TMP_DIR"; then
+            log "Extraction successful. Installing..."
+            
+            # Sync files but KEEP user settings and cookies
+            # We check if the zip contains a subfolder or direct files
+            if [ -d "$TMP_DIR/Twitch Drops Miner" ]; then
+                SOURCE_PATH="$TMP_DIR/Twitch Drops Miner/"
+            else
+                SOURCE_PATH="$TMP_DIR/"
+            fi
+
+            rsync -a --exclude='cookies.jar' --exclude='settings.json' "$SOURCE_PATH" "$TARGET_DIR/"
+            
+            # Cleanup
+            rm -f "$ZIP_NAME"
+            rm -rf "$TMP_DIR"
+            chmod +x "$PROGRAM_PATH"
+            log "Update completed successfully."
         else
-            rsync -a --exclude='cookies.jar' --exclude='settings.json' "$TMP_DIR/" "$TARGET_DIR/"
+            log "ERROR: Unzip failed. Skipping update."
         fi
-        
-        rm -f "$ZIP_NAME"
-        rm -rf "$TMP_DIR"
-        chmod +x "$PROGRAM_PATH"
-        log "Update abgeschlossen."
     else
-        log "Download fehlgeschlagen. Starte alte Version."
+        log "ERROR: Download failed. Starting existing version."
     fi
 }
 
-# --- HAUPTABLAUF ---
+start_firefox() {
+    # Check if Firefox is already running
+    if pgrep -f "firefox" > /dev/null; then
+        log "Firefox is already running."
+    else
+        log "Starting Firefox..."
+        # We use systemd-run to escape the service cgroup (Fixes 'not a snap cgroup' error)
+        # We start it in background (&) so it doesn't block the script
+        systemd-run --user --scope firefox >> /dev/null 2>&1 &
+    fi
+}
 
-# 1. Update versuchen
+# --- MAIN EXECUTION ---
+
+# 1. Perform Update
 do_update
 
-# 2. Programm starten (Im Vordergrund, damit Systemd es überwachen kann!)
-log "Starte Miner auf Display :1..."
-
-# xhost erlaubt Zugriff auf das Display
+# 2. Grant Display Permissions (prevents X11 errors)
 xhost +local: >> /dev/null 2>&1 || true
 
+# 3. Start Firefox (Persistent)
+start_firefox
+
+# 4. Start Twitch Miner
+# We use 'exec' so the Miner becomes the main process of this script.
+# If the Miner crashes, the script exits, and Systemd restarts everything.
+log "Starting Twitch Drops Miner on Display $DISPLAY..."
+
 if [ -x "$PROGRAM_PATH" ]; then
-    # Wir starten es NICHT mit nohup, sondern direkt, damit Systemd den Prozess "hält"
     exec "$PROGRAM_PATH"
 else
-    log "FEHLER: Datei nicht ausführbar: $PROGRAM_PATH"
+    log "CRITICAL ERROR: Program not found or not executable: $PROGRAM_PATH"
     exit 1
 fi
