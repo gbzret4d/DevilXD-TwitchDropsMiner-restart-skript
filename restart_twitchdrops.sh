@@ -167,7 +167,7 @@ menu_toggle_update() {
 show_main_menu() {
     while true; do
         CHOICE=$(whiptail --title "Script Configuration & Control" --menu "Select an option:" 16 70 6 \
-        "1" "START NOW (Run Automation)" \
+        "1" "START NOW (Restart & Update)" \
         "2" "Config: Restart Interval (Systemd)" \
         "3" "Config: VNC Resolution ($VNC_RES)" \
         "4" "Config: Auto-Update ($ENABLE_UPDATE)" \
@@ -177,7 +177,13 @@ show_main_menu() {
         case $CHOICE in
             1) 
                 clear; 
-                task_update  # <-- HIER WAR DER FEHLER (Jetz gefixt)
+                echo "Stopping background service (if running)..."
+                sudo systemctl stop twitchminer.service 2>/dev/null
+                
+                echo "Killing old miner processes..."
+                pkill -f "Twitch Drops Miner" 2>/dev/null
+                
+                task_update
                 task_check_vnc
                 xhost +local: >> /dev/null 2>&1 || true
                 killall autocutsel 2>/dev/null; autocutsel -fork; autocutsel -selection PRIMARY -fork
