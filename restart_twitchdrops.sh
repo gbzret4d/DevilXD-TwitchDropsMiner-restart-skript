@@ -2,14 +2,13 @@
 #----------------------------------------------------
 # restart_twitchdrops.sh
 # Purpose: Updates/Starts Twitch Miner and Firefox Nightly on Display :1
-# Context: Handles both MANUAL start and SYSTEMD service start automatically.
+# Context: Handles MANUAL start and SYSTEMD service start.
+# Fixes: Forces 'default' profile to keep settings/addons.
 #----------------------------------------------------
 
 set -u
 
 # --- MANUAL START DETECTION ---
-# If the variable IS_SYSTEMD_SERVICE is NOT set, the user started this manually.
-# We need to cleanup the background service and setup VNC ourself.
 if [ -z "${IS_SYSTEMD_SERVICE:-}" ]; then
     echo ">> MANUAL START DETECTED <<"
     echo "Stopping background service (requires sudo)..."
@@ -21,9 +20,7 @@ if [ -z "${IS_SYSTEMD_SERVICE:-}" ]; then
     
     echo "Starting VNC Server..."
     vncserver :1 -geometry 1600x900 -depth 24
-    
-    echo ">> Manual environment ready. Starting logic... <<"
-    echo "------------------------------------------------"
+    echo ">> Manual environment ready. <<"
 fi
 
 # --- CONFIGURATION ---
@@ -35,6 +32,9 @@ ZIP_NAME="$DOWNLOAD_DIR/update.zip"
 TMP_DIR="/tmp/twitch_update"
 TARGET_DIR="$USER_HOME/Desktop/devilxd/Twitch Drops Miner"
 LOG_FILE="$TARGET_DIR/twitchdropsminer.log"
+
+# PROFILE NAME: Change 'default' if your profile has a different name in Profile Manager
+FIREFOX_PROFILE="default"
 
 export DISPLAY=:1
 export PATH="/usr/local/bin:/usr/bin:/bin"
@@ -79,12 +79,14 @@ setup_clipboard() {
 }
 
 start_firefox() {
-    # Check if Firefox Nightly (trunk) is running
-    if pgrep -x "firefox-trunk" > /dev/null; then
-        log "Firefox Nightly is already running."
+    # Check if Firefox Nightly is already running
+    if pgrep -f "firefox-trunk" > /dev/null; then
+        log "Firefox Nightly is already running. Assuming it is on Display :1."
+        log "NOTE: If you cannot see Firefox, run 'pkill -f firefox' manually to reset it."
     else
-        log "Starting Firefox Nightly..."
-        nohup firefox-trunk >> /dev/null 2>&1 &
+        log "Starting Firefox Nightly with profile '$FIREFOX_PROFILE'..."
+        # -P forces the profile. -no-remote allows multiple instances if needed (but we avoid that here)
+        nohup firefox-trunk -P "$FIREFOX_PROFILE" >> /dev/null 2>&1 &
     fi
 }
 
@@ -98,7 +100,6 @@ start_firefox
 log "Starting Twitch Drops Miner on Display $DISPLAY..."
 
 if [ -x "$PROGRAM_PATH" ]; then
-    # exec replaces the shell with the miner
     exec "$PROGRAM_PATH"
 else
     log "CRITICAL ERROR: Program not found: $PROGRAM_PATH"
