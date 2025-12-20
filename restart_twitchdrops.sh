@@ -4,7 +4,7 @@
 # Purpose: Master Controller & Script Configurator
 # Features: Script GUI Settings (Resolution, Timer, Updates)
 # Language: English
-# Fix: Corrected Miner Path Logic
+# Fix: Added missing Update-Call in Menu Option 1
 #----------------------------------------------------
 
 set -u
@@ -15,11 +15,8 @@ SCRIPT_CONFIG="$USER_HOME/.config/twitch-script.conf"
 SERVICE_FILE="/etc/systemd/system/twitchminer.service"
 
 # --- CORRECTED PATHS ---
-# Base directory where the miner files are located
 MINER_DIR="$USER_HOME/Desktop/devilxd/Twitch Drops Miner"
-# The actual executable file
 MINER_EXEC="$MINER_DIR/Twitch Drops Miner (by DevilXD)"
-# The log file
 MINER_LOG="$MINER_DIR/twitchdropsminer.log"
 
 # Update Settings
@@ -27,7 +24,6 @@ DOWNLOAD_DIR="$USER_HOME/Downloads"
 ZIP_URL="https://github.com/DevilXD/TwitchDropsMiner/releases/download/dev-build/Twitch.Drops.Miner.Linux.PyInstaller-x86_64.zip"
 ZIP_NAME="$DOWNLOAD_DIR/update.zip"
 TMP_DIR="/tmp/twitch_update"
-# Target dir for updates is the same as MINER_DIR
 TARGET_DIR="$MINER_DIR"
 
 # Firefox
@@ -37,7 +33,6 @@ export DISPLAY=:1
 export PATH="/usr/local/bin:/usr/bin:/bin"
 
 # --- LOAD CONFIGURATION ---
-# Default values if config doesn't exist
 VNC_RES="1600x900"
 ENABLE_UPDATE="true"
 
@@ -79,7 +74,6 @@ task_update() {
     
     if wget -q -L -O "$ZIP_NAME" "$ZIP_URL"; then
         if unzip -q -o "$ZIP_NAME" -d "$TMP_DIR"; then
-            # Handle folder structure
             if [ -d "$TMP_DIR/Twitch Drops Miner" ]; then
                 SOURCE_PATH="$TMP_DIR/Twitch Drops Miner/"
             else
@@ -100,11 +94,9 @@ task_update() {
 }
 
 task_start_firefox() {
-    # CHECK: Is it already running?
     if pgrep -f "firefox-trunk" > /dev/null; then
         log "Firefox Nightly is already running. Skipping start."
     else
-        # Auto-detect profile ending in .default
         PROFILE_DIR=$(find "$FIREFOX_ROOT" -maxdepth 1 -type d -name "*.default" | head -n 1)
 
         if [ -n "$PROFILE_DIR" ]; then
@@ -185,6 +177,7 @@ show_main_menu() {
         case $CHOICE in
             1) 
                 clear; 
+                task_update  # <-- HIER WAR DER FEHLER (Jetz gefixt)
                 task_check_vnc
                 xhost +local: >> /dev/null 2>&1 || true
                 killall autocutsel 2>/dev/null; autocutsel -fork; autocutsel -selection PRIMARY -fork
