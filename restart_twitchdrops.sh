@@ -4,6 +4,7 @@
 # Purpose: Master Controller & Script Configurator
 # Features: Script GUI Settings (Resolution, Timer, Updates)
 # Language: English
+# Fix: Corrected Miner Path Logic
 #----------------------------------------------------
 
 set -u
@@ -13,16 +14,21 @@ USER_HOME="/home/testuser"
 SCRIPT_CONFIG="$USER_HOME/.config/twitch-script.conf"
 SERVICE_FILE="/etc/systemd/system/twitchminer.service"
 
-# Miner Paths
-MINER_DIR="$USER_HOME/Desktop/devilxd/Twitch Drops Miner/Twitch Drops Miner (by DevilXD)"
+# --- CORRECTED PATHS ---
+# Base directory where the miner files are located
+MINER_DIR="$USER_HOME/Desktop/devilxd/Twitch Drops Miner"
+# The actual executable file
 MINER_EXEC="$MINER_DIR/Twitch Drops Miner (by DevilXD)"
-MINER_LOG="$USER_HOME/Desktop/devilxd/Twitch Drops Miner/twitchdropsminer.log"
+# The log file
+MINER_LOG="$MINER_DIR/twitchdropsminer.log"
 
 # Update Settings
 DOWNLOAD_DIR="$USER_HOME/Downloads"
 ZIP_URL="https://github.com/DevilXD/TwitchDropsMiner/releases/download/dev-build/Twitch.Drops.Miner.Linux.PyInstaller-x86_64.zip"
 ZIP_NAME="$DOWNLOAD_DIR/update.zip"
 TMP_DIR="/tmp/twitch_update"
+# Target dir for updates is the same as MINER_DIR
+TARGET_DIR="$MINER_DIR"
 
 # Firefox
 FIREFOX_ROOT="$USER_HOME/.mozilla/firefox-trunk"
@@ -80,7 +86,7 @@ task_update() {
                 SOURCE_PATH="$TMP_DIR/"
             fi
             # Update files but protect settings
-            rsync -a --exclude='cookies.jar' --exclude='settings.json' "$SOURCE_PATH" "$MINER_DIR/"
+            rsync -a --exclude='cookies.jar' --exclude='settings.json' "$SOURCE_PATH" "$TARGET_DIR/"
             rm -f "$ZIP_NAME"
             rm -rf "$TMP_DIR"
             chmod +x "$MINER_EXEC"
@@ -116,7 +122,8 @@ task_start_miner() {
     if [ -x "$MINER_EXEC" ]; then
         exec "$MINER_EXEC"
     else
-        log "ERROR: Miner executable not found!"
+        log "ERROR: Miner executable not found at: $MINER_EXEC"
+        log "TIP: Enable Auto-Update in the menu and run again to download it."
         exit 1
     fi
 }
