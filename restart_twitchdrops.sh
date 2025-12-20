@@ -2,26 +2,10 @@
 #----------------------------------------------------
 # restart_twitchdrops.sh
 # Purpose: Updates/Starts Twitch Miner and Firefox Nightly on Display :1
-# Context: Handles MANUAL start and SYSTEMD service start.
-# Fixes: Forces 'default' profile to keep settings/addons.
+# Feature: Auto-detects Profile & Resumes existing VNC session
 #----------------------------------------------------
 
 set -u
-
-# --- MANUAL START DETECTION ---
-if [ -z "${IS_SYSTEMD_SERVICE:-}" ]; then
-    echo ">> MANUAL START DETECTED <<"
-    echo "Stopping background service (requires sudo)..."
-    sudo systemctl stop twitchminer.service
-    
-    echo "Resetting VNC Session :1..."
-    vncserver -kill :1 > /dev/null 2>&1
-    rm -f /tmp/.X1-lock /tmp/.X11-unix/X1
-    
-    echo "Starting VNC Server..."
-    vncserver :1 -geometry 1600x900 -depth 24
-    echo ">> Manual environment ready. <<"
-fi
 
 # --- CONFIGURATION ---
 USER_HOME="/home/testuser"
@@ -33,9 +17,6 @@ TMP_DIR="/tmp/twitch_update"
 TARGET_DIR="$USER_HOME/Desktop/devilxd/Twitch Drops Miner"
 LOG_FILE="$TARGET_DIR/twitchdropsminer.log"
 
-# PROFILE NAME: Change 'default' if your profile has a different name in Profile Manager
-FIREFOX_PROFILE="default"
-
 export DISPLAY=:1
 export PATH="/usr/local/bin:/usr/bin:/bin"
 
@@ -43,6 +24,18 @@ export PATH="/usr/local/bin:/usr/bin:/bin"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
+}
+
+check_vnc() {
+    # Check if VNC Lockfile for Display :1 exists
+    if [ -e /tmp/.X11-unix/X1 ]; then
+        echo ">> VNC Session :1 is already running. Using it. <<"
+    else
+        echo ">> VNC Session :1 not found. Starting it... <<"
+        # Clean up potential dead locks
+        rm -f /tmp/.X1-lock /tmp/.X11-unix/X1
+        vncserver :1 -geometry 1600x900 -depth 24
+    fi
 }
 
 do_update() {
@@ -72,31 +65,52 @@ do_update() {
 }
 
 setup_clipboard() {
-    log "Initializing Clipboard (autocutsel)..."
+    # Only restart autocutsel if VNC is running
+    log "Refreshing Clipboard (autocutsel)..."
     killall autocutsel 2>/dev/null
     autocutsel -fork
     autocutsel -selection PRIMARY -fork
 }
 
 start_firefox() {
-    # Check if Firefox Nightly is already running
+    # 1. Check if Firefox is running
     if pgrep -f "firefox-trunk" > /dev/null; then
-        log "Firefox Nightly is already running. Assuming it is on Display :1."
-        log "NOTE: If you cannot see Firefox, run 'pkill -f firefox' manually to reset it."
+        log "Firefox Nightly is already running. Leaving it alone."
     else
-        log "Starting Firefox Nightly with profile '$FIREFOX_PROFILE'..."
-        # -P forces the profile. -no-remote allows multiple instances if needed (but we avoid that here)
-        nohup firefox-trunk -P "$FIREFOX_PROFILE" >> /dev/null 2>&1 &
+        # 2. Dynamic Profile Detection
+        # Finds the first directory ending in .default inside the firefox-trunk folder
+        # This automatically picks 'cl9wal0s.default' and ignores 'knpmkjww.default-beta'
+        PROFILE_DIR=$(find "$USER_HOME/.mozilla/firefox-trunk" -maxdepth 1 -type d -name "*.default" | head -n 1)
+
+        if [ -n "$PROFILE_DIR" ]; then
+            log "Starting Firefox Nightly with auto-detected profile: $PROFILE_DIR"
+            nohup firefox-trunk -profile "$PROFILE_DIR" >> /dev/null 2>&1 &
+        else
+            log "WARNING: No .default profile found! Starting Firefox without specific profile..."
+            nohup firefox-trunk >> /dev/null 2>&1 &
+        fi
     fi
 }
 
 # --- MAIN EXECUTION ---
 
+# 1. Smart VNC Handling (Only important if started manually)
+if [ -z "${IS_SYSTEMD_SERVICE:-}" ]; then
+    # Manual Mode: Check/Start VNC, but don't kill it if it runs.
+    check_vnc
+fi
+
+# 2. Update logic
 do_update
+
+# 3. Permissions & Clipboard
 xhost +local: >> /dev/null 2>&1 || true
 setup_clipboard
+
+# 4. Start Browser
 start_firefox
 
+# 5. Start Miner
 log "Starting Twitch Drops Miner on Display $DISPLAY..."
 
 if [ -x "$PROGRAM_PATH" ]; then
