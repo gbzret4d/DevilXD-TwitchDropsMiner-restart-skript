@@ -1,8 +1,9 @@
 #!/bin/bash
 #----------------------------------------------------
 # restart_twitchdrops.sh
-# Purpose: Updates/Starts Twitch Miner and Chrome on Display :1
+# Purpose: Updates/Starts Twitch Miner and Firefox on Display :1
 # Context: Runs via Systemd Service (Persistent Session)
+# Features: Native Firefox, Copy/Paste Fix, Auto-Update
 #----------------------------------------------------
 
 set -u
@@ -11,6 +12,7 @@ set -u
 USER_HOME="/home/testuser"
 PROGRAM_PATH="$USER_HOME/Desktop/devilxd/Twitch Drops Miner/Twitch Drops Miner (by DevilXD)"
 DOWNLOAD_DIR="$USER_HOME/Downloads"
+# URL for the Linux x64 PyInstaller Build
 ZIP_URL="https://github.com/DevilXD/TwitchDropsMiner/releases/download/dev-build/Twitch.Drops.Miner.Linux.PyInstaller-x86_64.zip"
 ZIP_NAME="$DOWNLOAD_DIR/update.zip"
 TMP_DIR="/tmp/twitch_update"
@@ -29,22 +31,28 @@ log() {
 
 do_update() {
     log "Checking for updates..."
+    
+    # Cleanup previous runs
     rm -rf "$TMP_DIR" "$ZIP_NAME"
     mkdir -p "$TMP_DIR"
     
+    # Download with retry (following redirects)
     if wget -q -L -O "$ZIP_NAME" "$ZIP_URL"; then
         log "Download successful. Extracting..."
+        
         if unzip -q -o "$ZIP_NAME" -d "$TMP_DIR"; then
-            log "Extraction successful. Installing..."
             
+            # Handle potential folder structure changes in zip
             if [ -d "$TMP_DIR/Twitch Drops Miner" ]; then
                 SOURCE_PATH="$TMP_DIR/Twitch Drops Miner/"
             else
                 SOURCE_PATH="$TMP_DIR/"
             fi
 
+            # Sync new files but PRESERVE user settings/cookies
             rsync -a --exclude='cookies.jar' --exclude='settings.json' "$SOURCE_PATH" "$TARGET_DIR/"
             
+            # Cleanup
             rm -f "$ZIP_NAME"
             rm -rf "$TMP_DIR"
             chmod +x "$PROGRAM_PATH"
@@ -57,33 +65,44 @@ do_update() {
     fi
 }
 
-start_browser() {
-    # Check if Chrome is already running
-    if pgrep -f "chrome" > /dev/null; then
-        log "Browser (Chrome) is already running."
+setup_clipboard() {
+    # Fixes Copy & Paste between Windows/MobaXterm and VNC
+    log "Initializing Clipboard (autocutsel)..."
+    killall autocutsel 2>/dev/null
+    autocutsel -fork
+    autocutsel -selection PRIMARY -fork
+}
+
+start_firefox() {
+    # Check if Firefox is already running
+    if pgrep -x "firefox" > /dev/null; then
+        log "Firefox is already running."
     else
-        log "Starting Google Chrome..."
-        # --no-sandbox is important for stability in VNC/Systemd environments
-        # --start-maximized ensures it covers the screen
-        nohup google-chrome --no-sandbox --start-maximized >> /dev/null 2>&1 &
+        log "Starting Firefox..."
+        # Starting native Firefox in background
+        nohup firefox >> /dev/null 2>&1 &
     fi
 }
 
 # --- MAIN EXECUTION ---
 
-# 1. Update Miner
+# 1. Update the Miner
 do_update
 
-# 2. Grant Display Permissions
+# 2. Grant Display Permissions (prevents X11 errors)
 xhost +local: >> /dev/null 2>&1 || true
 
-# 3. Start Browser (Chrome)
-start_browser
+# 3. Fix Copy & Paste
+setup_clipboard
 
-# 4. Start Twitch Miner
+# 4. Start Browser (Firefox)
+start_firefox
+
+# 5. Start Twitch Miner
 log "Starting Twitch Drops Miner on Display $DISPLAY..."
 
 if [ -x "$PROGRAM_PATH" ]; then
+    # exec replaces the shell with the miner, so Systemd monitors the miner directly
     exec "$PROGRAM_PATH"
 else
     log "CRITICAL ERROR: Program not found or not executable: $PROGRAM_PATH"
