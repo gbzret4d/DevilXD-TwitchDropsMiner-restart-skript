@@ -2,9 +2,8 @@
 #----------------------------------------------------
 # restart_twitchdrops.sh
 # Purpose: Master Controller & Script Configurator
-# Features: Script GUI Settings (Resolution, Timer, Updates)
+# Features: Script GUI, Auto-Update, Backups, Log-Rotation
 # Language: English
-# Fix: Added missing Update-Call in Menu Option 1
 #----------------------------------------------------
 
 set -u
@@ -13,8 +12,9 @@ set -u
 USER_HOME="/home/testuser"
 SCRIPT_CONFIG="$USER_HOME/.config/twitch-script.conf"
 SERVICE_FILE="/etc/systemd/system/twitchminer.service"
+BACKUP_DIR="$USER_HOME/Backups"
 
-# --- CORRECTED PATHS ---
+# Miner Paths
 MINER_DIR="$USER_HOME/Desktop/devilxd/Twitch Drops Miner"
 MINER_EXEC="$MINER_DIR/Twitch Drops Miner (by DevilXD)"
 MINER_LOG="$MINER_DIR/twitchdropsminer.log"
@@ -31,6 +31,15 @@ FIREFOX_ROOT="$USER_HOME/.mozilla/firefox-trunk"
 
 export DISPLAY=:1
 export PATH="/usr/local/bin:/usr/bin:/bin"
+
+# --- LOG-ROTATION (Robustness) ---
+if [ -f "$MINER_LOG" ]; then
+    # If log is larger than 5MB, rotate it
+    if [ $(stat -c%s "$MINER_LOG") -ge 5000000 ]; then
+        mv "$MINER_LOG" "$MINER_LOG.old"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Log rotated. Old log saved as .old" > "$MINER_LOG"
+    fi
+fi
 
 # --- LOAD CONFIGURATION ---
 VNC_RES="1600x900"
@@ -50,6 +59,20 @@ save_config() {
     mkdir -p "$(dirname "$SCRIPT_CONFIG")"
     echo "VNC_RES=\"$VNC_RES\"" > "$SCRIPT_CONFIG"
     echo "ENABLE_UPDATE=\"$ENABLE_UPDATE\"" >> "$SCRIPT_CONFIG"
+}
+
+task_backup() {
+    mkdir -p "$BACKUP_DIR"
+    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+    log "Creating backup of settings and cookies..."
+    
+    if [ -d "$MINER_DIR" ]; then
+        # Backup only the essential files
+        tar -czf "$BACKUP_DIR/miner_cfg_$TIMESTAMP.tar.gz" -C "$MINER_DIR" "settings.json" "cookies.jar" 2>/dev/null
+        # Delete backups older than 7 days
+        find "$BACKUP_DIR" -name "miner_cfg_*.tar.gz" -mtime +7 -delete
+        log "Backup created in $BACKUP_DIR"
+    fi
 }
 
 task_check_vnc() {
@@ -79,6 +102,8 @@ task_update() {
             else
                 SOURCE_PATH="$TMP_DIR/"
             fi
+            # Perform backup before rsync
+            task_backup
             # Update files but protect settings
             rsync -a --exclude='cookies.jar' --exclude='settings.json' "$SOURCE_PATH" "$TARGET_DIR/"
             rm -f "$ZIP_NAME"
@@ -112,10 +137,11 @@ task_start_firefox() {
 task_start_miner() {
     log "Starting Twitch Drops Miner..."
     if [ -x "$MINER_EXEC" ]; then
-        exec "$MINER_EXEC"
+        # Running via nohup ensures it survives terminal closing during manual starts
+        nohup "$MINER_EXEC" >> "$MINER_LOG" 2>&1 &
+        log "Miner started in background."
     else
         log "ERROR: Miner executable not found at: $MINER_EXEC"
-        log "TIP: Enable Auto-Update in the menu and run again to download it."
         exit 1
     fi
 }
@@ -139,47 +165,39 @@ menu_systemd_timer() {
 
 menu_resolution() {
     NEW_RES=$(whiptail --title "VNC Resolution" --menu "Select Screen Resolution for Display :1" 15 60 5 \
-    "1280x720" "720p (Low RAM)" \
-    "1600x900" "900p (Standard)" \
-    "1920x1080" "1080p (FHD)" \
-    "1024x768" "Old School" 3>&1 1>&2 2>&3)
+    "1280x720" "720p" \
+    "1600x900" "900p" \
+    "1920x1080" "1080p" 3>&1 1>&2 2>&3)
 
     if [ $? -eq 0 ]; then
         VNC_RES="$NEW_RES"
         save_config
-        whiptail --title "Saved" --msgbox "Resolution set to $VNC_RES.\nRestart the server/service to apply." 8 60
+        whiptail --title "Saved" --msgbox "Resolution set to $VNC_RES." 8 60
     fi
 }
 
 menu_toggle_update() {
-    if [ "$ENABLE_UPDATE" == "true" ]; then
-        if (whiptail --title "Auto-Update" --yesno "Auto-Update is currently ENABLED.\nDisable it?" 8 60); then
-            ENABLE_UPDATE="false"
-        fi
-    else
-        if (whiptail --title "Auto-Update" --yesno "Auto-Update is currently DISABLED.\nEnable it?" 8 60); then
-            ENABLE_UPDATE="true"
-        fi
-    fi
+    [ "$ENABLE_UPDATE" == "true" ] && ENABLE_UPDATE="false" || ENABLE_UPDATE="true"
     save_config
+    whiptail --title "Auto-Update" --msgbox "Auto-Update is now: $ENABLE_UPDATE" 8 40
 }
 
 show_main_menu() {
     while true; do
-        CHOICE=$(whiptail --title "Script Configuration & Control" --menu "Select an option:" 16 70 6 \
+        CHOICE=$(whiptail --title "Script Configuration & Control" --menu "Select an option:" 18 70 7 \
         "1" "START NOW (Restart & Update)" \
-        "2" "Config: Restart Interval (Systemd)" \
-        "3" "Config: VNC Resolution ($VNC_RES)" \
-        "4" "Config: Auto-Update ($ENABLE_UPDATE)" \
-        "5" "View Live Logs" \
-        "6" "Exit" 3>&1 1>&2 2>&3)
+        "2" "Manual Backup (Create now)" \
+        "3" "Config: Restart Interval (Systemd)" \
+        "4" "Config: VNC Resolution ($VNC_RES)" \
+        "5" "Config: Auto-Update ($ENABLE_UPDATE)" \
+        "6" "View Live Logs" \
+        "7" "Exit" 3>&1 1>&2 2>&3)
 
         case $CHOICE in
             1) 
                 clear; 
                 echo "Stopping background service (if running)..."
                 sudo systemctl stop twitchminer.service 2>/dev/null
-                
                 echo "Killing old miner processes..."
                 pkill -f "Twitch Drops Miner" 2>/dev/null
                 
@@ -191,11 +209,12 @@ show_main_menu() {
                 task_start_miner
                 break 
                 ;;
-            2) menu_systemd_timer ;;
-            3) menu_resolution ;;
-            4) menu_toggle_update ;;
-            5) clear; echo "Press CTRL+C to exit logs..."; tail -f "$MINER_LOG"; ;;
-            6) break ;;
+            2) task_backup; whiptail --msgbox "Backup created!" 8 40 ;;
+            3) menu_systemd_timer ;;
+            4) menu_resolution ;;
+            5) menu_toggle_update ;;
+            6) clear; tail -f "$MINER_LOG" ;;
+            7) break ;;
             *) break ;;
         esac
     done
@@ -203,15 +222,14 @@ show_main_menu() {
 
 # --- MAIN EXECUTION ---
 
-# If running via Systemd (Environment variable set) -> Run automated tasks
 if [ "${IS_SYSTEMD_SERVICE:-}" == "true" ]; then
     task_update
     task_check_vnc
     xhost +local: >> /dev/null 2>&1 || true
     killall autocutsel 2>/dev/null; autocutsel -fork; autocutsel -selection PRIMARY -fork
     task_start_firefox
-    task_start_miner
+    # Direct exec for systemd tracking
+    exec "$MINER_EXEC"
 else
-    # If running manually -> Show GUI
     show_main_menu
 fi
