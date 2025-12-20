@@ -1,147 +1,70 @@
 #!/bin/bash
 #----------------------------------------------------
-# restart_twitchdrops.sh
-# Zweck: Update, Neustart und Betrieb des Twitch Drops Miner
-# Für dauerhafte xrdp-Sitzung mit dynamischer Display-Erkennung
-# Kein systemd, Cron-fähig
+# run_twitch_miner.sh
+# Läuft stabil als Systemd Service auf Display :1
 #----------------------------------------------------
 
-set -euo pipefail
+set -u
 
-USER=$(id -un)
-USER_HOME=$(eval echo "~$USER")
+# --- KONFIGURATION ---
+USER_HOME="/home/testuser"
 PROGRAM_PATH="$USER_HOME/Desktop/devilxd/Twitch Drops Miner/Twitch Drops Miner (by DevilXD)"
 DOWNLOAD_DIR="$USER_HOME/Downloads"
-ZIP_BASE_URL="https://github.com/DevilXD/TwitchDropsMiner/releases/download/dev-build"
-ZIP_FILE_NAME="Twitch.Drops.Miner.Linux.PyInstaller-x86_64.zip"
-ZIP_URL="$ZIP_BASE_URL/$ZIP_FILE_NAME"
-ZIP_NAME="$DOWNLOAD_DIR/$ZIP_FILE_NAME"
-TMP_EXTRACT_DIR="/tmp/twitchdropsminer_update_tmp"
+ZIP_URL="https://github.com/DevilXD/TwitchDropsMiner/releases/download/dev-build/Twitch.Drops.Miner.Linux.PyInstaller-x86_64.zip"
+ZIP_NAME="$DOWNLOAD_DIR/update.zip"
+TMP_DIR="/tmp/twitch_update"
 TARGET_DIR="$USER_HOME/Desktop/devilxd/Twitch Drops Miner"
-LOG_FILE="$TARGET_DIR/twitchdropsminer.log"
-MAX_LOG_SIZE=$((10 * 1024 * 1024))  # 10 MB
-LOG_DELETE_OLDER_THAN_DAYS=7
 
+# WICHTIG: Wir zwingen das Display auf :1
+export DISPLAY=:1
+export PATH="/usr/local/bin:/usr/bin:/bin"
+
+# Logging Funktion
 log() {
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
 }
 
-rotate_log() {
-  if [ -f "$LOG_FILE" ] && [ "$(stat -c%s "$LOG_FILE")" -gt "$MAX_LOG_SIZE" ]; then
-    mv "$LOG_FILE" "$LOG_FILE.$(date '+%Y%m%d_%H%M%S')"
-    log "Log rotiert."
-    find "$TARGET_DIR" -maxdepth 1 -name 'twitchdropsminer.log.*' -mtime +"$LOG_DELETE_OLDER_THAN_DAYS" -exec rm -f {} +
-    log "Alte Logs gelöscht."
-  fi
-}
-
-get_rdp_display() {
-  for d in {10..20}; do
-    if [ -e "/tmp/.X11-unix/X$d" ]; then
-      echo ":$d"
-      return 0
+# Update Logik
+do_update() {
+    log "Prüfe auf Updates / Starte Update Prozess..."
+    rm -rf "$TMP_DIR"
+    mkdir -p "$TMP_DIR"
+    
+    if wget -q -L -O "$ZIP_NAME" "$ZIP_URL"; then
+        log "Download erfolgreich. Entpacke..."
+        unzip -q -o "$ZIP_NAME" -d "$TMP_DIR"
+        
+        # Dateien rüberkopieren (Einstellungen behalten)
+        if [ -d "$TMP_DIR/Twitch Drops Miner" ]; then
+            rsync -a --exclude='cookies.jar' --exclude='settings.json' "$TMP_DIR/Twitch Drops Miner/" "$TARGET_DIR/"
+        else
+            rsync -a --exclude='cookies.jar' --exclude='settings.json' "$TMP_DIR/" "$TARGET_DIR/"
+        fi
+        
+        rm -f "$ZIP_NAME"
+        rm -rf "$TMP_DIR"
+        chmod +x "$PROGRAM_PATH"
+        log "Update abgeschlossen."
+    else
+        log "Download fehlgeschlagen. Starte alte Version."
     fi
-  done
-  # Fallback, falls kein Display gefunden wird
-  echo ":12"
 }
 
-stop_program() {
-  local pids
-  pids=$(pgrep -f "Twitch Drops Miner" || true)
-  if [ -n "$pids" ]; then
-    for pid in $pids; do
-      kill "$pid" && log "SIGTERM an Prozess $pid gesendet." || {
-        log "SIGTERM fehlgeschlagen, versuche SIGKILL an Prozess $pid."
-        kill -9 "$pid" || log "Konnte Prozess $pid nicht töten."
-      }
-    done
-    log "Alle Twitch Drops Miner Prozesse gestoppt."
-  else
-    log "Keine laufenden Twitch Drops Miner Prozesse gefunden."
-  fi
-}
+# --- HAUPTABLAUF ---
 
-start_program() {
-  export DISPLAY=$(get_rdp_display)
-  xhost +local: || true
+# 1. Update versuchen
+do_update
 
-  log "Starte Twitch Drops Miner mit DISPLAY=$DISPLAY"
+# 2. Programm starten (Im Vordergrund, damit Systemd es überwachen kann!)
+log "Starte Miner auf Display :1..."
 
-  if [ ! -x "$PROGRAM_PATH" ]; then
-    log "FEHLER: Programm nicht gefunden oder nicht ausführbar: $PROGRAM_PATH"
+# xhost erlaubt Zugriff auf das Display
+xhost +local: >> /dev/null 2>&1 || true
+
+if [ -x "$PROGRAM_PATH" ]; then
+    # Wir starten es NICHT mit nohup, sondern direkt, damit Systemd den Prozess "hält"
+    exec "$PROGRAM_PATH"
+else
+    log "FEHLER: Datei nicht ausführbar: $PROGRAM_PATH"
     exit 1
-  fi
-
-  nohup "$PROGRAM_PATH" >>"$LOG_FILE" 2>&1 &
-  log "Twitch Drops Miner mit PID $! gestartet"
-}
-
-download_with_retry() {
-  local url="$1" output="$2"
-  local tries=3 count=0
-  while [ $count -lt $tries ]; do
-    log "Download Versuch $((count+1))/$tries: $url"
-    if wget -O "$output" "$url"; then
-      log "Download erfolgreich."
-      return 0
-    fi
-    log "Download fehlgeschlagen, warte 5 Sekunden."
-    sleep 5
-    count=$((count+1))
-  done
-  log "FEHLER: Download nach $tries Versuchen fehlgeschlagen."
-  return 1
-}
-
-update_and_restart() {
-  log "Starte Update und Neustart."
-
-  stop_program
-
-  rotate_log
-
-  rm -rf "$TMP_EXTRACT_DIR"
-  mkdir -p "$TMP_EXTRACT_DIR"
-
-  if ! download_with_retry "$ZIP_URL" "$ZIP_NAME"; then
-    log "FEHLER: Download fehlgeschlagen, Abbruch."
-    exit 1
-  fi
-
-  log "Entpacke Download..."
-  unzip -q "$ZIP_NAME" -d "$TMP_EXTRACT_DIR"
-  log "Entpackt."
-
-  log "Kopiere Dateien..."
-  rsync -a --exclude='cookies.jat' --exclude='settings.json' "$TMP_EXTRACT_DIR/Twitch Drops Miner/" "$TARGET_DIR/"
-  log "Kopiert."
-
-  rm -rf "$TMP_EXTRACT_DIR"
-  rm -f "$ZIP_NAME"
-  log "Bereinigt."
-
-  start_program
-
-  log "Update und Neustart abgeschlossen."
-}
-
-case "${1:-}" in
-  start)
-    start_program
-    ;;
-  stop)
-    stop_program
-    ;;
-  restart)
-    stop_program
-    start_program
-    ;;
-  update_restart)
-    update_and_restart
-    ;;
-  *)
-    echo "Usage: $0 {start|stop|restart|update_restart}"
-    exit 1
-    ;;
-esac
+fi
