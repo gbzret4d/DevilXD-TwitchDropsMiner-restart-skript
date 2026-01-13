@@ -205,13 +205,12 @@ show_main_menu() {
 
         case $CHOICE in
             1) 
-                # NEUE LOGIK: Wir starten nicht manuell, sondern zwingen Systemd zum Neustart
                 clear
                 if (whiptail --title "Restart Service" --yesno "This will restart the background service immediately.\n\n- Updates will run\n- Timer will reset (2h)\n- Automation stays ACTIVE\n\nProceed?" 12 60); then
                     echo "Restarting twitchminer.service..."
-                    # Hier passiert die Magie: Systemd wird neu gestartet
+                    # Wir zwingen Systemd zum Neustart -> Timer bleibt erhalten!
                     if sudo systemctl restart twitchminer.service; then
-                        whiptail --title "Success" --msgbox "Service restarted successfully!\n\nThe miner is now running in the background via Systemd.\nThe 2h timer is active." 10 60
+                        whiptail --title "Success" --msgbox "Service restarted successfully!\n\nThe miner is now running via Systemd.\nThe 2h timer has been reset." 10 60
                     else
                         whiptail --title "Error" --msgbox "Failed to restart service. Check sudo permissions." 8 40
                     fi
