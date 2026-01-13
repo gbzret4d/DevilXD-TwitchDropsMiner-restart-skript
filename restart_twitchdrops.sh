@@ -194,10 +194,10 @@ menu_toggle_update() {
 
 show_main_menu() {
     while true; do
-        CHOICE=$(whiptail --title "Control Panel" --menu "Status: Update=$ENABLE_UPDATE" 18 70 7 \
-        "1" "START NOW (Manual Restart)" \
-        "2" "Backup Now" \
-        "3" "Config: Restart Timer (Check this!)" \
+        CHOICE=$(whiptail --title "Twitch Miner Control" --menu "Status: Update=$ENABLE_UPDATE" 18 75 7 \
+        "1" "TRIGGER SYSTEMD (Start & Keep Timer)" \
+        "2" "Manual Backup" \
+        "3" "Config: Restart Timer" \
         "4" "Config: Resolution ($VNC_RES)" \
         "5" "Config: Toggle Update" \
         "6" "View Logs" \
@@ -205,14 +205,19 @@ show_main_menu() {
 
         case $CHOICE in
             1) 
-                clear; 
-                echo "Stopping service..."
-                sudo systemctl stop twitchminer.service 2>/dev/null
-                pkill -f "Twitch Drops Miner" 2>/dev/null
-                task_update; task_check_vnc; xhost +local: >> /dev/null 2>&1 || true
-                killall autocutsel 2>/dev/null; autocutsel -fork; autocutsel -selection PRIMARY -fork
-                task_start_firefox; task_start_miner
-                break ;;
+                # NEUE LOGIK: Wir starten nicht manuell, sondern zwingen Systemd zum Neustart
+                clear
+                if (whiptail --title "Restart Service" --yesno "This will restart the background service immediately.\n\n- Updates will run\n- Timer will reset (2h)\n- Automation stays ACTIVE\n\nProceed?" 12 60); then
+                    echo "Restarting twitchminer.service..."
+                    # Hier passiert die Magie: Systemd wird neu gestartet
+                    if sudo systemctl restart twitchminer.service; then
+                        whiptail --title "Success" --msgbox "Service restarted successfully!\n\nThe miner is now running in the background via Systemd.\nThe 2h timer is active." 10 60
+                    else
+                        whiptail --title "Error" --msgbox "Failed to restart service. Check sudo permissions." 8 40
+                    fi
+                fi
+                break 
+                ;;
             2) task_backup; whiptail --msgbox "Backup created!" 8 40 ;;
             3) menu_systemd_timer ;;
             4) menu_resolution ;;
