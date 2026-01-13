@@ -4,6 +4,7 @@
 # Purpose: Master Controller & Script Configurator
 # Features: Script GUI, Auto-Update, Backups, Log-Rotation
 # Language: English
+# Fix: Verbose Logging enabled to debug update issues
 #----------------------------------------------------
 
 set -u
@@ -32,12 +33,11 @@ FIREFOX_ROOT="$USER_HOME/.mozilla/firefox-trunk"
 export DISPLAY=:1
 export PATH="/usr/local/bin:/usr/bin:/bin"
 
-# --- LOG-ROTATION (Robustness) ---
+# --- LOG-ROTATION ---
 if [ -f "$MINER_LOG" ]; then
-    # If log is larger than 5MB, rotate it
     if [ $(stat -c%s "$MINER_LOG") -ge 5000000 ]; then
         mv "$MINER_LOG" "$MINER_LOG.old"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Log rotated. Old log saved as .old" > "$MINER_LOG"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Log rotated." > "$MINER_LOG"
     fi
 fi
 
@@ -45,6 +45,7 @@ fi
 VNC_RES="1600x900"
 ENABLE_UPDATE="true"
 
+# Load config if exists
 if [ -f "$SCRIPT_CONFIG" ]; then
     source "$SCRIPT_CONFIG"
 fi
@@ -64,14 +65,12 @@ save_config() {
 task_backup() {
     mkdir -p "$BACKUP_DIR"
     TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-    log "Creating backup of settings and cookies..."
+    log "Creating backup..."
     
     if [ -d "$MINER_DIR" ]; then
-        # Backup only the essential files
         tar -czf "$BACKUP_DIR/miner_cfg_$TIMESTAMP.tar.gz" -C "$MINER_DIR" "settings.json" "cookies.jar" 2>/dev/null
-        # Delete backups older than 7 days
         find "$BACKUP_DIR" -name "miner_cfg_*.tar.gz" -mtime +7 -delete
-        log "Backup created in $BACKUP_DIR"
+        log "Backup saved to $BACKUP_DIR"
     fi
 }
 
@@ -79,15 +78,16 @@ task_check_vnc() {
     if [ -e /tmp/.X11-unix/X1 ]; then
         log "VNC Session :1 found. Resuming..."
     else
-        log "VNC Session :1 not found. Starting with resolution $VNC_RES..."
+        log "VNC Session :1 not found. Starting ($VNC_RES)..."
         rm -f /tmp/.X1-lock /tmp/.X11-unix/X1
         vncserver :1 -geometry "$VNC_RES" -depth 24
     fi
 }
 
 task_update() {
+    # Check Config Setting
     if [ "$ENABLE_UPDATE" != "true" ]; then
-        log "Auto-Update is DISABLED in script settings. Skipping."
+        log "WARNING: Auto-Update is DISABLED in config ($SCRIPT_CONFIG). Skipping."
         return
     fi
 
@@ -95,26 +95,33 @@ task_update() {
     rm -rf "$TMP_DIR" "$ZIP_NAME"
     mkdir -p "$TMP_DIR"
     
-    if wget -q -L -O "$ZIP_NAME" "$ZIP_URL"; then
+    # Removed -q (quiet) to see errors in log if download fails
+    log "Downloading from GitHub..."
+    if wget -nv -L -O "$ZIP_NAME" "$ZIP_URL" >> "$MINER_LOG" 2>&1; then
+        log "Download finished. Extracting..."
         if unzip -q -o "$ZIP_NAME" -d "$TMP_DIR"; then
             if [ -d "$TMP_DIR/Twitch Drops Miner" ]; then
                 SOURCE_PATH="$TMP_DIR/Twitch Drops Miner/"
             else
                 SOURCE_PATH="$TMP_DIR/"
             fi
-            # Perform backup before rsync
+            
             task_backup
-            # Update files but protect settings
+            
+            # Sync files
             rsync -a --exclude='cookies.jar' --exclude='settings.json' "$SOURCE_PATH" "$TARGET_DIR/"
+            
+            # Fix Permissions explicitly
+            chmod +x "$MINER_EXEC"
+            
             rm -f "$ZIP_NAME"
             rm -rf "$TMP_DIR"
-            chmod +x "$MINER_EXEC"
             log "Update successful."
         else
-            log "ERROR: Unzip failed."
+            log "ERROR: Unzip failed. Is 'unzip' installed?"
         fi
     else
-        log "ERROR: Download failed."
+        log "ERROR: Download failed. Check internet or GitHub URL."
     fi
 }
 
@@ -123,12 +130,11 @@ task_start_firefox() {
         log "Firefox Nightly is already running. Skipping start."
     else
         PROFILE_DIR=$(find "$FIREFOX_ROOT" -maxdepth 1 -type d -name "*.default" | head -n 1)
-
         if [ -n "$PROFILE_DIR" ]; then
-            log "Starting Firefox Nightly (Profile: $(basename "$PROFILE_DIR"))..."
+            log "Starting Firefox Nightly..."
             nohup firefox-trunk -profile "$PROFILE_DIR" >> /dev/null 2>&1 &
         else
-            log "WARNING: No .default profile found. Starting generic..."
+            log "Starting Firefox Nightly (Generic)..."
             nohup firefox-trunk >> /dev/null 2>&1 &
         fi
     fi
@@ -137,9 +143,8 @@ task_start_firefox() {
 task_start_miner() {
     log "Starting Twitch Drops Miner..."
     if [ -x "$MINER_EXEC" ]; then
-        # Running via nohup ensures it survives terminal closing during manual starts
         nohup "$MINER_EXEC" >> "$MINER_LOG" 2>&1 &
-        log "Miner started in background."
+        log "Miner started."
     else
         log "ERROR: Miner executable not found at: $MINER_EXEC"
         exit 1
@@ -150,65 +155,64 @@ task_start_miner() {
 
 menu_systemd_timer() {
     CURRENT_VAL=$(grep "RuntimeMaxSec=" "$SERVICE_FILE" | cut -d= -f2)
+    [ -z "$CURRENT_VAL" ] && CURRENT_VAL="Not Set"
+    
     NEW_VAL=$(whiptail --title "Systemd Restart Interval" --inputbox \
-    "The server automatically restarts the service after this time.\n\nCurrent Value: $CURRENT_VAL\nExamples: 2h, 6h, 1d, infinity (disabled)" \
+    "Current Value: $CURRENT_VAL\n\nEnter restart interval (e.g. 2h). This is REQUIRED for auto-updates!" \
     12 60 "$CURRENT_VAL" 3>&1 1>&2 2>&3)
     
     if [ $? -eq 0 ]; then
-        if (whiptail --title "Sudo Required" --yesno "Changing system files requires Root privileges.\nProceed with sudo?" 8 60); then
-            sudo sed -i "s/^RuntimeMaxSec=.*/RuntimeMaxSec=$NEW_VAL/" "$SERVICE_FILE"
+        if (whiptail --title "Sudo Required" --yesno "Update systemd service file?" 8 60); then
+            # If line exists, replace it. If not, append it to [Service] section.
+            if grep -q "RuntimeMaxSec=" "$SERVICE_FILE"; then
+                sudo sed -i "s/^RuntimeMaxSec=.*/RuntimeMaxSec=$NEW_VAL/" "$SERVICE_FILE"
+            else
+                # Insert after [Service]
+                sudo sed -i "/\[Service\]/a RuntimeMaxSec=$NEW_VAL" "$SERVICE_FILE"
+            fi
             sudo systemctl daemon-reload
-            whiptail --title "Success" --msgbox "Interval changed to $NEW_VAL.\nWill take effect after the next service restart." 8 60
+            whiptail --title "Success" --msgbox "Interval set to $NEW_VAL.\nRestart required to activate timer." 8 60
         fi
     fi
 }
 
 menu_resolution() {
-    NEW_RES=$(whiptail --title "VNC Resolution" --menu "Select Screen Resolution for Display :1" 15 60 5 \
-    "1280x720" "720p" \
-    "1600x900" "900p" \
-    "1920x1080" "1080p" 3>&1 1>&2 2>&3)
-
+    NEW_RES=$(whiptail --title "VNC Resolution" --menu "Select Resolution" 15 60 5 \
+    "1280x720" "720p" "1600x900" "900p" "1920x1080" "1080p" 3>&1 1>&2 2>&3)
     if [ $? -eq 0 ]; then
         VNC_RES="$NEW_RES"
         save_config
-        whiptail --title "Saved" --msgbox "Resolution set to $VNC_RES." 8 60
+        whiptail --msgbox "Resolution saved." 8 60
     fi
 }
 
 menu_toggle_update() {
     [ "$ENABLE_UPDATE" == "true" ] && ENABLE_UPDATE="false" || ENABLE_UPDATE="true"
     save_config
-    whiptail --title "Auto-Update" --msgbox "Auto-Update is now: $ENABLE_UPDATE" 8 40
+    whiptail --msgbox "Auto-Update is now: $ENABLE_UPDATE" 8 40
 }
 
 show_main_menu() {
     while true; do
-        CHOICE=$(whiptail --title "Script Configuration & Control" --menu "Select an option:" 18 70 7 \
-        "1" "START NOW (Restart & Update)" \
-        "2" "Manual Backup (Create now)" \
-        "3" "Config: Restart Interval (Systemd)" \
-        "4" "Config: VNC Resolution ($VNC_RES)" \
-        "5" "Config: Auto-Update ($ENABLE_UPDATE)" \
-        "6" "View Live Logs" \
+        CHOICE=$(whiptail --title "Control Panel" --menu "Status: Update=$ENABLE_UPDATE" 18 70 7 \
+        "1" "START NOW (Manual Restart)" \
+        "2" "Backup Now" \
+        "3" "Config: Restart Timer (Check this!)" \
+        "4" "Config: Resolution ($VNC_RES)" \
+        "5" "Config: Toggle Update" \
+        "6" "View Logs" \
         "7" "Exit" 3>&1 1>&2 2>&3)
 
         case $CHOICE in
             1) 
                 clear; 
-                echo "Stopping background service (if running)..."
+                echo "Stopping service..."
                 sudo systemctl stop twitchminer.service 2>/dev/null
-                echo "Killing old miner processes..."
                 pkill -f "Twitch Drops Miner" 2>/dev/null
-                
-                task_update
-                task_check_vnc
-                xhost +local: >> /dev/null 2>&1 || true
+                task_update; task_check_vnc; xhost +local: >> /dev/null 2>&1 || true
                 killall autocutsel 2>/dev/null; autocutsel -fork; autocutsel -selection PRIMARY -fork
-                task_start_firefox
-                task_start_miner
-                break 
-                ;;
+                task_start_firefox; task_start_miner
+                break ;;
             2) task_backup; whiptail --msgbox "Backup created!" 8 40 ;;
             3) menu_systemd_timer ;;
             4) menu_resolution ;;
@@ -220,7 +224,7 @@ show_main_menu() {
     done
 }
 
-# --- MAIN EXECUTION ---
+# --- MAIN ---
 
 if [ "${IS_SYSTEMD_SERVICE:-}" == "true" ]; then
     task_update
@@ -228,7 +232,6 @@ if [ "${IS_SYSTEMD_SERVICE:-}" == "true" ]; then
     xhost +local: >> /dev/null 2>&1 || true
     killall autocutsel 2>/dev/null; autocutsel -fork; autocutsel -selection PRIMARY -fork
     task_start_firefox
-    # Direct exec for systemd tracking
     exec "$MINER_EXEC"
 else
     show_main_menu
